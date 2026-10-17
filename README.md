@@ -35,6 +35,14 @@ Tokens: USDC (default), EURC, or any ERC-20 on Base with at most 18 decimals.
 
 A month is 30 days and a year is 365 days.
 
+## Companion dashboard
+
+A small web page that shows what an address pays and receives on Sablier Flow, with the earned amounts counting up by the second. PayBox plugins cannot ship their own interface, so this lives beside the plugin as a plain static site. It reads Base straight from the browser, never asks for a wallet connection, and signs nothing.
+
+**https://jemiiahh.github.io/payday/** (add `?a=0xYourAddress` to open it on an address)
+
+It shows a live counter for what you owe recipients and what is waiting for you, one row per stream with its rate, status and runway, and a plain warning when a stream is about to run out of funds. Source is in `site/`; `pnpm site:build` writes the deployable copy to `docs/`.
+
 ## Configure in the PayBox developer portal
 
 Network access (exact hosts):
@@ -80,6 +88,6 @@ pnpm build && node scripts/e2e.mjs
 - Streaming is done by Sablier Flow, deployed and maintained by Sablier Labs. Payday only builds calls to it.
 - Libraries: [viem](https://viem.sh), the MCP TypeScript server SDK, and zod.
 
-Payday's own code is `src/flow.ts`, `src/plugin.ts` and `scripts/e2e.mjs`.
+Payday's own code is `src/flow.ts`, `src/plugin.ts`, `scripts/e2e.mjs` and the dashboard in `site/`.
 
 This is hackathon software and has not been audited. Start with small amounts.

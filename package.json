@@ -13,7 +13,8 @@
     "build": "esbuild src/plugin.ts --bundle --platform=node --format=esm --target=node24 --minify --outfile=dist/plugin.mjs",
     "conformance": "node scripts/conformance.mjs",
     "test": "node scripts/test.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "site:build": "node site/build.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
