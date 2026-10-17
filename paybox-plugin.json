@@ -1,0 +1,7 @@
+{
+  "tool": "plan_stream",
+  "arguments": {
+    "amount": "3000",
+    "per": "month"
+  }
+}
