@@ -1,12 +1,61 @@
 # Payday
 
-Pay people by the second, from your agent.
+**Your AI agent pays people by the second.**
 
-Payday is a [PayBox](https://paybox.sh) plugin that turns "pay Ada 3,000 USDC a month" into a live payment stream on Base. Money accrues to the recipient every second and they can withdraw it whenever they like. The payer can top up, pause, change the rate, or end the stream and take back whatever hasn't been earned yet.
+Tell your agent "pay Ada 3,000 USDC a month" and Payday turns it into a live payment stream on Base. The money accrues to Ada every second and she can withdraw whenever she likes. You can top up, pause, change the rate, or end the stream and take back whatever has not been earned. Payroll for up to 25 people takes one approval.
 
-Streams run on [Sablier Flow](https://docs.sablier.com/concepts/flow/overview) v3, an audited open-ended streaming protocol. Payday never holds funds or keys. Every tool that moves money returns an unsigned transaction proposal, and PayBox simulates it and asks for the user's approval before anything is signed.
+Payday is a [PayBox](https://paybox.sh) plugin. It never holds money or keys: every tool that moves funds only *proposes* a transaction, and PayBox simulates it and asks the owner to approve it with a passkey before anything is signed. Streams run on [Sablier Flow](https://docs.sablier.com/concepts/flow/overview) v3.
 
 Built for MoonPay Hackathons: PayBox Chapter 1.
+
+## For judges: a five-minute tour
+
+You do not need to install anything to check what Payday does.
+
+| # | Look at | Where | What you will see |
+|---|---|---|---|
+| 1 | The demo video (98 s) | [`docs/demo.mp4`](docs/demo.mp4), also at [jemiiahh.github.io/payday/demo.mp4](https://jemiiahh.github.io/payday/demo.mp4) | The problem, the idea, the real Claude and PayBox run, and the refund |
+| 2 | The live dashboard | [jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550) | The payer's wallet, read live from Base: the ended stream, what the recipient earned, and the flip-clock counter. Paste any address to look up its streams. |
+| 3 | The three real transactions | [Verified on Base mainnet](#verified-on-base-mainnet) below | Approve exactly 1 USDC, start a stream, end it and refund, all on Basescan |
+| 4 | The code | [`src/plugin.ts`](src/plugin.ts) (the 11 tools), [`src/flow.ts`](src/flow.ts) (Sablier calls, amounts, checks) | Small and readable; the payment logic is in `flow.ts` |
+| 5 | The tests | [`scripts/e2e.mjs`](scripts/e2e.mjs) | Every tool run against a fork of Base mainnet, with each proposal executed and checked on chain |
+
+**Where the entry lives.** The plugin is submitted as the hackathon entry in the PayBox developer portal. Until PayBox reviews it, it is installed privately on the author's PayBox account, so it is not in the public marketplace yet. The video and the transactions above are a real run of that installed plugin. To run it yourself, see [Try it yourself](#try-it-yourself).
+
+## What problem it solves
+
+Pay is earned every second but usually arrives in lumps. Streaming it today means leaving the chat, opening another app and signing by hand, and few people want to give an AI the keys to a wallet. Payday keeps the agent in the loop without giving it custody: the agent plans and proposes, PayBox shows what will happen, and the human approves.
+
+## How it works
+
+```
+you ──"pay Ada 3000 USDC a month"──▶ agent (Claude)
+                                       │  use_plugin
+                                       ▼
+                              Payday plugin  ──reads──▶ Base (Sablier Flow)
+                                       │ unsigned proposal (an approval, then a stream)
+                                       ▼
+                         PayBox: simulates it, asks for your passkey, signs, sends
+                                       ▼
+                           Sablier Flow streams USDC to Ada, by the second
+```
+
+A new stream takes two approvals: first an ERC-20 allowance for exactly the deposit, then the stream itself. Payday checks the wallet, proposes the allowance, and the agent calls it again once that confirms.
+
+## Try it yourself
+
+You need a PayBox account with a Base wallet holding a little USDC (a few cents is enough) and a few cents of ETH for gas. **This runs on Base mainnet with real money.** Keep amounts small.
+
+1. `pnpm install --frozen-lockfile && pnpm test` (Node 24.21.0 and pnpm 11.11.0; see [Build and test](#build-and-test)).
+2. Upload `dist/plugin.mjs` in the [PayBox developer portal](https://developer.paybox.sh), add the two network hosts under [Configure](#configure-in-the-paybox-developer-portal), and let the checks pass.
+3. Enable it at [app.paybox.sh/plugins](https://app.paybox.sh/plugins), and connect Claude to PayBox with the connector URL `https://api.paybox.sh/mcp`.
+4. In a new chat, try these. Replace the address with a wallet you own.
+   - `Use the Payday plugin to plan paying someone 3000 USDC per month.` (read-only)
+   - `Using the Payday plugin, start paying 0xYourWallet 1 USDC per hour from my PayBox Base wallet, funded with 1 USDC.` (two approvals)
+   - `List my Payday streams and show me the status of the new one.`
+   - `I authorize this. Using the Payday plugin, end the stream I just started and refund the unearned USDC to me.`
+
+Notes from real use: PayBox proposals expire after about five minutes, so approve promptly. Claude may ask for an explicit go-ahead before a recurring payment; saying "I authorize this" in the prompt avoids the pause. The first approval asks you to connect a signing key once.
 
 ## What an agent can do
 
@@ -99,7 +148,13 @@ pnpm build && node scripts/e2e.mjs
 - The build tooling, `src/paybox.ts` proposal helpers, and the conformance scripts in `scripts/` (except `e2e.mjs`) come from the PayBox plugin starter v1.0.2 at developer.paybox.sh.
 - Streaming is done by Sablier Flow, deployed and maintained by Sablier Labs. Payday only builds calls to it.
 - Libraries: [viem](https://viem.sh), the MCP TypeScript server SDK, and zod.
+- The demo video was made with a code-rendered film pipeline. Everything it shows from the run (the prompts, PayBox windows, hashes, times and amounts) is real; the counter in "The stream, replayed" replays the real 4 min 54 s at a stated higher speed, and the lumps-versus-ramp chart is a schematic.
 
 Payday's own code is `src/flow.ts`, `src/plugin.ts`, `scripts/e2e.mjs` and the dashboard in `site/`.
 
-This is hackathon software and has not been audited. Start with small amounts.
+## Limits
+
+- Hackathon software, not audited. Start with small amounts.
+- Base mainnet only, with USDC and EURC built in (other ERC-20s on Base work, up to 18 decimals).
+- Plugin calls must finish within PayBox's 10-second limit, so lists scan the newest 2,000 streams on Sablier Flow.
+- Not yet in the public PayBox marketplace; it is installed privately pending review.
