@@ -67,6 +67,7 @@ h1 {
 }
 .lookup button:hover { background: #ffe27a; }
 .lookup button:active { transform: translateY(1px); }
+.lookup button:disabled { opacity: 0.75; cursor: progress; }
 .form-msg { min-height: 1.5em; margin: 10px 0 0; font-weight: 500; color: var(--daffodil); }
 
 /* counters */

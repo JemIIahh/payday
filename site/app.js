@@ -312,7 +312,7 @@ function buildMeters() {
   const groups = [];
   if (out.length) groups.push({ label: "Owed to recipients", note: "Earned by the people you pay and not yet withdrawn", list: out, kind: "out" });
   if (inn.length) groups.push({ label: "Waiting for you", note: "Earned on streams that pay you, ready to withdraw", list: inn, kind: "in" });
-  if (!groups.length) groups.push({ label: "Owed to recipients", note: "Counters start when you look up an address", list: [], kind: "out", idle: true });
+  if (!groups.length) groups.push({ label: "Owed to recipients", note: state.owner ? "No streams for this address yet" : "Counters start when you look up an address", list: [], kind: "out", idle: true });
   for (const g of groups) {
     const odo = new Odometer("tiles", sym || "USDC");
     const note = h("p", { class: "meter-note", text: g.idle ? g.note : "" });
@@ -342,6 +342,10 @@ function summarize(t) {
   const sum = (l) => l.reduce((a, s) => a + s.ratePerSec * MONTH, 0);
   const el = $("summary");
   el.replaceChildren();
+  // The result of a lookup is told right under the address field, so it is never below the fold.
+  $("formMsg").textContent = state.owner && !state.streams.length
+    ? `No streams found for ${short(state.owner)} on Sablier Flow. Ask your agent to start one with the Payday plugin in PayBox.`
+    : "";
   const bits = [];
   if (out.length) bits.push(`You pay ${fmt(sum(out), 2)} ${sym} a month across ${out.length} running ${out.length === 1 ? "stream" : "streams"}.`);
   if (inn.length) bits.push(`You receive ${fmt(sum(inn), 2)} ${sym} a month across ${inn.length} ${inn.length === 1 ? "stream" : "streams"}.`);
@@ -421,10 +425,16 @@ function render() {
 // ---------- loading + wiring ----------
 
 let busy = false;
+function setBusy(on) {
+  const btn = $("lookup").querySelector("button");
+  btn.disabled = on;
+  btn.textContent = on ? "Reading Base…" : "Show streams";
+}
+
 async function refresh(initial) {
   if (!state.owner || busy) return;
   busy = true;
-  if (initial) { showStatus(document.createTextNode("Reading Base…")); }
+  if (initial) { setBusy(true); $("formMsg").textContent = ""; showStatus(document.createTextNode("Reading Base…")); }
   try {
     const data = await loadStreams(state.owner);
     Object.assign(state, { streams: data.streams, offset: data.offset, scanned: data.scanned, fetchedAt: Date.now() });
@@ -432,11 +442,12 @@ async function refresh(initial) {
   } catch (err) {
     console.error(err);
     if (initial || !state.streams.length) {
+      $("formMsg").textContent = "Couldn't reach Base just now. Check your connection and try again.";
       const retry = h("button", { type: "button", text: "Try again" });
       retry.addEventListener("click", () => refresh(true));
-      showStatus(h("span", {}, "Couldn't reach Base just now. Check your connection and try again.", retry));
+      showStatus(h("span", {}, "Couldn't reach Base just now.", retry));
     }
-  } finally { busy = false; }
+  } finally { busy = false; if (initial) setBusy(false); }
 }
 
 function lookup(raw) {
