@@ -43,6 +43,18 @@ A small web page that shows what an address pays and receives on Sablier Flow, w
 
 It shows a live counter for what you owe recipients and what is waiting for you, one row per stream with its rate, status and runway, and a plain warning when a stream is about to run out of funds. Source is in `site/`; `pnpm site:build` writes the deployable copy to `docs/`.
 
+## Verified on Base mainnet
+
+One full run through Claude, PayBox and Payday on 17 October 2026, from a PayBox wallet (`0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550`) holding 2 USDC. Every step needed the wallet owner's approval in PayBox.
+
+| Step | What happened | Transaction |
+|---|---|---|
+| Approve | Sablier allowed to pull exactly 1 USDC, never unlimited | [`0x2510bed4…ee6dfe`](https://basescan.org/tx/0x2510bed4e8c38edcfc30f4bd73f3182dc4d82ee49938742cb36861bfb9ee6dfe) |
+| Start stream | Stream 5: 1 USDC an hour to `0xB370…f7be`, funded with 1 USDC | [`0xb9a2afdd…f85422`](https://basescan.org/tx/0xb9a2afdd18208cab8e6e4c3cfaa45c8e4b4fb192f1985591af97d41cacf85422) |
+| End stream | Paused and refunded in one transaction after about 4.9 minutes | [`0xc7a1f2fa…1d6632`](https://basescan.org/tx/0xc7a1f2fa5626ecf11429bde1e19e62c2ed5c80fc35e070d820c6e39b0b1d6632) |
+
+The recipient earned 0.081666 USDC and the payer got 0.918334 USDC back, so the two add up to the 1 USDC deposited. The three transactions cost under a cent in gas. [Stream 5 on Sablier](https://app.sablier.com/payments/stream/FL4-8453-5) and the [dashboard view of the payer](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550) show the same state.
+
 ## Configure in the PayBox developer portal
 
 Network access (exact hosts):
