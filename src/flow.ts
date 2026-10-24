@@ -20,8 +20,11 @@ export const flowAbi = parseAbi([
   "function pause(uint256 streamId) payable",
   "function restart(uint256 streamId, uint128 ratePerSecond) payable",
   "function adjustRatePerSecond(uint256 streamId, uint128 newRatePerSecond) payable",
+  "function restartAndDeposit(uint256 streamId, uint128 ratePerSecond, uint128 amount) payable",
+  "function refund(uint256 streamId, uint128 amount) payable",
   "function refundMax(uint256 streamId) payable returns (uint128)",
   "function withdrawMax(uint256 streamId, address to) payable returns (uint128)",
+  "function transferTokens(address token, address to, uint128 amount) payable",
   "function batch(bytes[] calls) payable returns (bytes[])",
   "function nextStreamId() view returns (uint256)",
   "function isStream(uint256 streamId) view returns (bool)",
@@ -44,8 +47,10 @@ export const flowAbi = parseAbi([
 // BASE_RPC_URL (optional portal variable) puts a private RPC ahead of the public ones.
 const rpcUrls = [process.env.BASE_RPC_URL, ...RPC_HOSTS.map((host) => `https://${host}`)].filter((url): url is string => Boolean(url));
 
+// Concurrent single reads (wallet balance, allowance, name lookups) ride in one multicall round trip.
 export const client = createPublicClient({
   chain: base,
+  batch: { multicall: true },
   transport: fallback(rpcUrls.map((url) => http(url, { timeout: 3_500, retryCount: 0 }))),
 });
 
@@ -66,6 +71,13 @@ export function checksum(address: string, label: string): Address {
   const value = getAddress(address);
   if (value === "0x0000000000000000000000000000000000000000") throw new UserError(`${label} cannot be the zero address.`);
   return value;
+}
+
+/** Refuses paying a contract that can never spend it: the stream contract itself or a token contract. */
+export function refuseContractRecipient(address: Address, label: string, token?: Token) {
+  if (address === FLOW) throw new UserError(`${label} is the Sablier Flow contract itself, not a person's wallet.`);
+  const known = Object.values(KNOWN_TOKENS).find((entry) => entry.address === address);
+  if (known || address === token?.address) throw new UserError(`${label} is the ${known?.symbol ?? token?.symbol} token contract, not a person's wallet. Funds sent there are lost.`);
 }
 
 // ---------- amounts ----------
@@ -228,7 +240,7 @@ export function sablierUrl(id: bigint): string {
   return `https://app.sablier.com/payments/stream/FL4-8453-${id}`;
 }
 
-export function describeStream(stream: StreamState, symbol: string, now = Math.floor(Date.now() / 1000)) {
+export function describeStream(stream: StreamState, symbol: string, now = Math.floor(Date.now() / 1000), names = new Map<Address, string>()) {
   const d = stream.decimals;
   const live = stream.status === "streaming";
   const runsOut = live && stream.depletionTime ? Number(stream.depletionTime) : null;
@@ -236,7 +248,9 @@ export function describeStream(stream: StreamState, symbol: string, now = Math.f
     stream_id: stream.id.toString(),
     status: stream.status,
     sender: stream.sender,
+    sender_name: names.get(stream.sender) ?? null,
     recipient: stream.recipient,
+    recipient_name: names.get(stream.recipient) ?? null,
     token: symbol,
     token_address: stream.token,
     rate: perPeriod(stream.rate, d),
@@ -256,7 +270,9 @@ export const streamSummarySchema = z.object({
   stream_id: z.string(),
   status: z.enum(STATUS),
   sender: z.string(),
+  sender_name: z.string().nullable(),
   recipient: z.string(),
+  recipient_name: z.string().nullable(),
   token: z.string(),
   token_address: z.string(),
   rate: z.object({ hour: z.string(), day: z.string(), week: z.string(), month: z.string(), year: z.string() }).strict(),
@@ -279,23 +295,31 @@ export const proposalOutputSchema = z.object({
   [PROPOSAL_KEY]: evmOutputSchema.shape[PROPOSAL_KEY],
   step: z.string(),
   summary: z.string(),
+  warnings: z.array(z.string()).describe("Things the owner should check before approving. Relay them verbatim."),
   details: z.record(z.string(), z.string()),
 }).strict();
 
-export function propose(input: { to: Address; data: Hex; value?: bigint; step: string; summary: string; details: Record<string, string> }) {
+export function propose(input: { to: Address; data: Hex; value?: bigint; step: string; summary: string; details: Record<string, string>; warnings?: string[] }) {
   const proposal = proposeEvm({ chain: CHAIN, to: input.to, value: (input.value ?? 0n).toString(), data: input.data });
+  const warnings = input.warnings ?? [];
+  const check = warnings.length ? `\n\nCheck before approving:\n${warnings.map((warning) => `- ${warning}`).join("\n")}` : "";
   return {
-    content: [{ type: "text" as const, text: `${input.summary}\n\nUnsigned proposal only: PayBox simulates it and asks for approval before anything is signed.` }],
-    structuredContent: { ...proposal.structuredContent, step: input.step, summary: input.summary, details: input.details },
+    content: [{ type: "text" as const, text: `${input.summary}${check}\n\nUnsigned proposal only: PayBox simulates it and asks for approval before anything is signed.` }],
+    structuredContent: { ...proposal.structuredContent, step: input.step, summary: input.summary, warnings, details: input.details },
   };
+}
+
+/** Encodes several Flow calls as one transaction (Sablier's batch), or the single call as is. */
+export function flowCalls(calls: Hex[]): Hex {
+  return calls.length === 1 ? calls[0]! : encodeFunctionData({ abi: flowAbi, functionName: "batch", args: [calls] });
 }
 
 /**
  * Returns an approve proposal for `needed` (plus optional headroom, capped at the wallet's balance) when
  * Sablier Flow cannot yet pull it, after checking the wallet holds it. Returns null when no approval is needed.
  */
-export async function approvalIfNeeded(owner: Address, token: Token, needed: bigint, retry: string, headroom = 0n) {
-  const funds = await walletFunds(owner, token);
+export async function approvalIfNeeded(owner: Address, token: Token, needed: bigint, retry: string, headroom = 0n, warnings: string[] = [], funds?: Awaited<ReturnType<typeof walletFunds>>) {
+  funds ??= await walletFunds(owner, token);
   if (funds.balance < needed) {
     throw new UserError(`The wallet ${owner} holds ${display(funds.balance, token.decimals)} ${token.symbol}, but this needs ${display(needed, token.decimals)} ${token.symbol}.`);
   }
@@ -307,9 +331,35 @@ export async function approvalIfNeeded(owner: Address, token: Token, needed: big
     to: token.address,
     data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [FLOW, approve] }),
     step: "approve",
-    summary: `Step 1 of 2: allow Sablier Flow to move up to ${display(approve, token.decimals)} ${token.symbol} from ${owner}. Nothing is streamed yet. Once PayBox confirms this approval, call ${retry} again with the same arguments.`,
+    summary: `Step 1 of 2: allow Sablier Flow to move up to ${display(approve, token.decimals)} ${token.symbol} from ${owner}. Nothing is paid yet. Once PayBox confirms this approval, call ${retry} again with the same arguments.`,
     details: { token: token.symbol, spender: FLOW, amount: display(approve, token.decimals), current_allowance: display(funds.allowance, token.decimals) },
+    warnings,
   });
+}
+
+/**
+ * Plain-language checks on money leaving a wallet: a large share of the balance, a short runway, little
+ * left for top-ups, and per-hour or per-day amounts that look like a monthly figure typed in the wrong box.
+ */
+export function fundingWarnings(input: { token: Token; balance: bigint; outlay: bigint; monthly: bigint; runwaySeconds?: number; per?: Period }): string[] {
+  const { token, balance, outlay, monthly } = input;
+  const sym = token.symbol;
+  const warnings: string[] = [];
+  if (input.per && (input.per === "hour" || input.per === "day") && monthly > balance * 10n) {
+    warnings.push(`At this rate it costs ${display(monthly, token.decimals, 2)} ${sym} every 30 days, more than ten times what the wallet holds. If the amount was meant per month, change it before approving.`);
+  }
+  if (balance > 0n && outlay * 2n >= balance) {
+    warnings.push(`This moves ${display(outlay, token.decimals, 2)} ${sym}, ${Number((outlay * 100n) / balance)}% of the wallet's ${display(balance, token.decimals, 2)} ${sym}.`);
+  }
+  if (input.runwaySeconds !== undefined && input.runwaySeconds < 3 * 86_400) {
+    warnings.push(`It is funded for only ${duration(input.runwaySeconds)}. After that the recipient keeps earning pay the stream cannot cover until it is topped up.`);
+  }
+  const left = balance > outlay ? balance - outlay : 0n;
+  if (monthly > 0n && left * 30n < monthly * 7n) {
+    const days = Number((left * 30n * 10n) / monthly) / 10;
+    warnings.push(`Afterwards the wallet holds ${display(left, token.decimals, 2)} ${sym}, about ${days < 1 ? "less than a day" : `${days} days`} of this pay for future top-ups.`);
+  }
+  return warnings;
 }
 
 export function requireSender(stream: StreamState, sender: Address) {

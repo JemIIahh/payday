@@ -1,6 +1,6 @@
 {
   "name": "payday",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,7 +14,9 @@
     "conformance": "node scripts/conformance.mjs",
     "test": "node scripts/test.mjs",
     "typecheck": "tsc --noEmit",
-    "site:build": "node site/build.mjs"
+    "site:build": "node site/build.mjs",
+    "test:unit": "node --import tsx --test test/*.test.ts",
+    "e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
@@ -26,6 +28,7 @@
     "ajv": "8.20.0",
     "esbuild": "0.28.2",
     "tsx": "4.23.12",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "uqr": "0.1.3"
   }
 }
