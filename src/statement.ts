@@ -48,10 +48,23 @@ export type StreamLine = {
   withdrawn: bigint;
   deposited: bigint;
   refunded: bigint;
+  /** Covered pay not yet withdrawn at the end of the period: still in the stream, owed to the recipient. */
+  owed_end: bigint;
+  /** Spending only: unearned funds held in the stream at the start and end of the period. */
+  held_start: bigint;
+  held_end: bigint;
+  /** Seconds the stream paid during the period (while the address held it, for income), and its last rate (18-decimal). */
+  seconds: number;
+  rate: bigint;
+  /** The rate at the end of the period: 0 if the stream was paused, ended or not yet started by then. */
+  rate_end: bigint;
   events: { category: string; amount: bigint | null; timestamp: number; hash: string }[];
 };
 
-export type Totals = { covered: bigint; unfunded: bigint; upfront: bigint; withdrawn: bigint; deposited: bigint; refunded: bigint; decimals: number };
+export type Totals = {
+  covered: bigint; unfunded: bigint; upfront: bigint; withdrawn: bigint; deposited: bigint; refunded: bigint;
+  owed_end: bigint; held_start: bigint; held_end: bigint; decimals: number;
+};
 
 /** A pay_now payment: a plain token transfer made in the same transaction that created the stream. */
 export type Upfront = { amount: bigint; timestamp: number; hash: string };
@@ -162,21 +175,48 @@ export function descaled(scaled: bigint, decimals: number): bigint {
   return scaled / 10n ** BigInt(18 - decimals);
 }
 
-/** Cumulative accrued (net of write-offs) and covered pay of a stream at time `t`, in token units. */
+/**
+ * A stream's cumulative position just before time `t` (actions at `t` belong to the period that starts at `t`,
+ * matching the [from, to) periods below), in token units: pay accrued (net of write-offs), the part of it
+ * covered by funds, net funding (deposits - refunds), and what has been withdrawn.
+ */
 export function position(stream: IndexedStream, t: number, pieces = segments(stream)) {
   const decimals = Number(stream.asset.decimals);
   let funded = 0n;
   let writtenOff = 0n;
+  let withdrawn = 0n;
   for (const action of stream.actions) {
-    if (Number(action.timestamp) > t) continue;
+    if (Number(action.timestamp) >= t) continue;
     if (action.category === "Deposit") funded += big(action.amountA);
     else if (action.category === "Refund") funded -= big(action.amountA);
     else if (action.category === "Void") writtenOff += big(action.amountB);
+    else if (action.category === "Withdraw") withdrawn += big(action.amountA);
   }
   let accrued = descaled(accruedScaled(pieces, 0, t), decimals) - writtenOff;
   if (accrued < 0n) accrued = 0n;
   const covered = funded < accrued ? (funded > 0n ? funded : 0n) : accrued;
-  return { accrued, covered };
+  return { accrued, covered, funded, withdrawn };
+}
+
+/** The rate in force just before `t`. */
+function rateAt(pieces: Segment[], t: number): bigint {
+  const piece = pieces.find((p) => p.from < t && (p.to === null || p.to >= t));
+  return piece?.rate ?? 0n;
+}
+
+/** Seconds the stream was paying in [from, to), and its last non-zero rate there (restricted to `holder` when given). */
+function activity(pieces: Segment[], from: number, to: number, holder?: string): { seconds: number; rate: bigint } {
+  let seconds = 0;
+  let rate = 0n;
+  for (const piece of pieces) {
+    if (holder && piece.holder !== holder) continue;
+    const a = Math.max(piece.from, from);
+    const b = Math.min(piece.to ?? to, to);
+    if (b <= a || piece.rate === 0n) continue;
+    seconds += b - a;
+    rate = piece.rate;
+  }
+  return { seconds, rate };
 }
 
 /** The [from, to) stretches of a period during which `holder` held the stream. */
@@ -226,10 +266,14 @@ export function streamLines(stream: IndexedStream, address: string, from: number
     }
     const actions = stream.actions.filter((action) => inPeriod(action) && holderAt(stream, Number(action.timestamp)) === me);
     const mine = paidNow && holderAt(stream, paidNow.timestamp) === me;
+    const end = at(to);
+    const ran = activity(pieces, from, to, me);
     lines.push({
       ...base, side: "income", counterparty: lower(stream.sender),
       covered, unfunded: accrued > covered ? accrued - covered : 0n, upfront: mine ? paidNow.amount : 0n,
       withdrawn: sum(actions, "Withdraw"), deposited: 0n, refunded: 0n,
+      owed_end: holderAt(stream, to) === me && end.covered > end.withdrawn ? end.covered - end.withdrawn : 0n,
+      held_start: 0n, held_end: 0n, seconds: ran.seconds, rate: ran.rate, rate_end: holderAt(stream, to) === me ? rateAt(pieces, to) : 0n,
       events: [...actions.map(event), ...(mine ? upfrontEvent : [])],
     });
   }
@@ -238,10 +282,15 @@ export function streamLines(stream: IndexedStream, address: string, from: number
     const covered = end.covered - start.covered;
     const accrued = end.accrued - start.accrued;
     const actions = stream.actions.filter(inPeriod);
+    const ran = activity(pieces, from, to);
     lines.push({
       ...base, side: "spending", counterparty: holderAt(stream, to),
       covered, unfunded: accrued > covered ? accrued - covered : 0n, upfront: paidNow?.amount ?? 0n,
       withdrawn: sum(actions, "Withdraw"), deposited: sum(actions, "Deposit"), refunded: sum(actions, "Refund"),
+      owed_end: end.covered > end.withdrawn ? end.covered - end.withdrawn : 0n,
+      held_start: start.funded > start.covered ? start.funded - start.covered : 0n,
+      held_end: end.funded > end.covered ? end.funded - end.covered : 0n,
+      seconds: ran.seconds, rate: ran.rate, rate_end: rateAt(pieces, to),
       events: [...actions.map(event), ...upfrontEvent],
     });
   }
@@ -256,13 +305,16 @@ export function totals(lines: StreamLine[]): Record<string, Totals> {
   const byAddress = new Map<string, Totals & { label: string }>();
   for (const line of lines) {
     let row = byAddress.get(line.token_address);
-    if (!row) byAddress.set(line.token_address, row = { label: line.token, covered: 0n, unfunded: 0n, upfront: 0n, withdrawn: 0n, deposited: 0n, refunded: 0n, decimals: line.decimals });
+    if (!row) byAddress.set(line.token_address, row = { label: line.token, covered: 0n, unfunded: 0n, upfront: 0n, withdrawn: 0n, deposited: 0n, refunded: 0n, owed_end: 0n, held_start: 0n, held_end: 0n, decimals: line.decimals });
     row.covered += line.covered;
     row.unfunded += line.unfunded;
     row.upfront += line.upfront;
     row.withdrawn += line.withdrawn;
     row.deposited += line.deposited;
     row.refunded += line.refunded;
+    row.owed_end += line.owed_end;
+    row.held_start += line.held_start;
+    row.held_end += line.held_end;
   }
   const out: Record<string, Totals> = Object.create(null);
   for (const [address, { label, ...row }] of byAddress) out[label in out ? address : label] = row;

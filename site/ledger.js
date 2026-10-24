@@ -92,6 +92,13 @@ function makeRow(s) {
   return r;
 }
 
+/** This month's document for one counterparty: their payslip from the payer, or the payer's statement for them. */
+function docLink(s) {
+  const pays = role(s) === "pay";
+  const other = pays ? s.recipient : s.sender;
+  return `?a=${state.owner}&statement=${currentMonth()}&doc=${pays ? "payments" : "payslip"}&with=${other.toLowerCase()}`;
+}
+
 function paintTools(r) {
   const toggle = (key, text, build) => {
     const btn = h("button", { class: "tool", type: "button", "aria-expanded": String(r.open === key), text });
@@ -107,6 +114,7 @@ function paintTools(r) {
   r.tools.replaceChildren(...[
     prompts.length ? toggle("ask", "Ask your agent", () => promptPanel(streamPrompts(r.s, state.owner))) : null,
     toggle("history", "History", () => historyPanel(r.s)),
+    h("a", { class: "tool", href: docLink(r.s), text: role(r.s) === "pay" ? "Statement for this person" : "Payslip from this payer" }),
   ].filter(Boolean));
 }
 
@@ -250,7 +258,8 @@ function renderWallet() {
   });
   box.append(
     h("div", { class: "wallet-actions" },
-      h("a", { class: "pill solid", href: `?a=${state.owner}&statement=${month}`, text: "Open this month's payslip" }),
+      receiving ? h("a", { class: "pill solid", href: `?a=${state.owner}&statement=${month}&doc=payslip`, text: "Payslip" }) : null,
+      state.streams.some((s) => role(s) === "pay") ? h("a", { class: receiving ? "pill" : "pill solid", href: `?a=${state.owner}&statement=${month}&doc=payments`, text: "Payment statement" }) : null,
       ask),
     panel,
   );

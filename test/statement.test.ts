@@ -209,6 +209,37 @@ describe("statement math", () => {
     assert.equal(streamLines(stream7, PAYEE, monthBounds("2026-11").from, monthBounds("2026-11").to, upfront)[0]?.upfront, 0n);
   });
 
+  it("reconciles what a payer held in streams across a period", () => {
+    // 1 USDC a second, 100 deposited at t, 30 refunded at t + 50, 20 withdrawn by the payee at t + 40.
+    const t = 1_800_000_000;
+    const stream: IndexedStream = {
+      tokenId: "20", sender: PAYER, recipient: PAYEE, startTime: String(t), asset: USDC,
+      actions: [
+        action("Create", t, { amountA: (10n ** 18n).toString(), addressB: PAYEE }),
+        action("Deposit", t, { amountA: "100000000" }),
+        action("Withdraw", t + 40, { amountA: "20000000", addressB: PAYEE }),
+        action("Refund", t + 50, { amountA: "30000000" }),
+      ],
+    };
+    for (const [from, to] of [[t, t + 60], [t + 10, t + 45], [t + 45, t + 70]]) {
+      const [line] = streamLines(stream, PAYER, from!, to!);
+      assert.equal(line!.held_end, line!.held_start + line!.deposited - line!.refunded - line!.covered, `[${from}, ${to})`);
+    }
+    const [spending] = streamLines(stream, PAYER, t, t + 60);
+    assert.equal(spending?.covered, 60_000_000n);
+    assert.equal(spending?.held_end, 10_000_000n); // 100 in, 30 back, 60 earned
+    assert.equal(spending?.owed_end, 40_000_000n); // 60 earned, 20 withdrawn
+    assert.equal(spending?.seconds, 60);
+    assert.equal(spending?.rate, 10n ** 18n);
+    assert.equal(spending?.rate_end, 10n ** 18n);
+    const [paused] = streamLines(stream5, PAYER, october.from, october.to);
+    assert.equal(paused?.rate_end, 0n); // stream 5 was paused on 17 October
+    assert.equal(paused?.rate, 277_777_777_777_778n); // but it paid 1 USDC an hour while it ran
+    const [income] = streamLines(stream, PAYEE, t, t + 60);
+    assert.equal(income?.owed_end, 40_000_000n);
+    assert.equal(income?.withdrawn, 20_000_000n);
+  });
+
   it("handles a self-stream as both income and spending", () => {
     const self = { ...stream5, recipient: PAYER, actions: stream5.actions.map((a) => (a.category === "Create" ? { ...a, addressB: PAYER } : a)) };
     assert.deepEqual(streamLines(self, PAYER, october.from, october.to).map((line) => line.side), ["income", "spending"]);

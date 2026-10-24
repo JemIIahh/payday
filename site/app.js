@@ -1,6 +1,6 @@
 // Picks the view from the URL:
 //   ?pay=0x…&amount=…&per=…   a pay-me request
-//   ?a=0x…&statement=YYYY-MM  a printable payslip
+//   ?a=0x…&statement=YYYY-MM  a printable payslip or payment statement (&doc=payslip|payments, &with=0x…)
 //   ?a=0x… or ?a=name.base.eth live streams for a wallet
 //   (nothing)                 home: calculator and pay-me link maker
 import { resolveInput } from "./chain.js";
@@ -33,7 +33,7 @@ async function open(raw, statement) {
   $("addr").value = who.name ?? who.address;
   if (statement) {
     setView("payslip");
-    showPayslip(who.address, who.name, statement);
+    showPayslip(who.address, who.name, statement, { doc: params.get("doc"), with: params.get("with") });
   } else {
     setView("ledger");
     history.replaceState(null, "", `?a=${who.name ?? who.address}`);
