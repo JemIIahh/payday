@@ -52,6 +52,24 @@ export type StreamLine = {
 export type Totals = { covered: bigint; unfunded: bigint; withdrawn: bigint; deposited: bigint; refunded: bigint; decimals: number };
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+// Tokens known by address. Anyone can deploy a token whose symbol() says "USDC", so symbols are never trusted.
+const KNOWN_TOKENS: Record<string, string> = {
+  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC",
+  "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42": "EURC",
+};
+
+/**
+ * A safe display label for a token: "USDC" or "EURC" when the address is the real one, otherwise the
+ * self-reported symbol (only if short and plain, else "TOKEN") with a short address, e.g. "WETH (0x4200…0006)".
+ * Labels are unique per address in practice and can't smuggle text into what an agent reads.
+ */
+export function tokenLabel(address: string, symbol: string | null | undefined): string {
+  const known = KNOWN_TOKENS[address.toLowerCase()];
+  if (known) return known;
+  const clean = symbol && /^[A-Za-z0-9.$_-]{1,12}$/.test(symbol) ? symbol : "TOKEN";
+  return `${clean} (${address.slice(0, 6)}…${address.slice(-4)})`;
+}
 const lower = (value: string | null | undefined) => (value ?? "").toLowerCase();
 const big = (value: string | null | undefined) => (value ? BigInt(value) : 0n);
 const byTime = (actions: IndexedAction[]) => [...actions].sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
@@ -151,7 +169,7 @@ export function streamLines(stream: IndexedStream, address: string, from: number
   const decimals = Number(stream.asset.decimals);
   const pieces = segments(stream);
   const inPeriod = (action: IndexedAction) => Number(action.timestamp) >= from && Number(action.timestamp) < to;
-  const base = { stream_id: stream.tokenId, token: stream.asset.symbol, token_address: lower(stream.asset.address), decimals };
+  const base = { stream_id: stream.tokenId, token: tokenLabel(stream.asset.address, stream.asset.symbol), token_address: lower(stream.asset.address), decimals };
   const at = (t: number) => position(stream, t, pieces);
   const sum = (actions: IndexedAction[], category: string) => actions.filter((a) => a.category === category).reduce((total, a) => total + big(a.amountA), 0n);
   const event = (action: IndexedAction) => ({
@@ -193,17 +211,23 @@ export function streamLines(stream: IndexedStream, address: string, from: number
   return lines;
 }
 
-/** Sums lines per token symbol (decimals carried along for display). */
+/**
+ * Sums lines per token, keyed by the token's display label. Grouping is by token address, so two different
+ * tokens never merge; should two labels ever collide, the full address is used for the later one.
+ */
 export function totals(lines: StreamLine[]): Record<string, Totals> {
-  const out: Record<string, Totals> = {};
+  const byAddress = new Map<string, Totals & { label: string }>();
   for (const line of lines) {
-    const row = out[line.token] ??= { covered: 0n, unfunded: 0n, withdrawn: 0n, deposited: 0n, refunded: 0n, decimals: line.decimals };
+    let row = byAddress.get(line.token_address);
+    if (!row) byAddress.set(line.token_address, row = { label: line.token, covered: 0n, unfunded: 0n, withdrawn: 0n, deposited: 0n, refunded: 0n, decimals: line.decimals });
     row.covered += line.covered;
     row.unfunded += line.unfunded;
     row.withdrawn += line.withdrawn;
     row.deposited += line.deposited;
     row.refunded += line.refunded;
   }
+  const out: Record<string, Totals> = Object.create(null);
+  for (const [address, { label, ...row }] of byAddress) out[label in out ? address : label] = row;
   return out;
 }
 

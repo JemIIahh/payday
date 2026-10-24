@@ -103,10 +103,11 @@ function paintTools(r) {
     });
     return btn;
   };
-  r.tools.replaceChildren(
-    toggle("ask", "Ask your agent", () => promptPanel(streamPrompts(r.s, state.owner))),
+  const prompts = streamPrompts(r.s, state.owner);
+  r.tools.replaceChildren(...[
+    prompts.length ? toggle("ask", "Ask your agent", () => promptPanel(streamPrompts(r.s, state.owner))) : null,
     toggle("history", "History", () => historyPanel(r.s)),
-  );
+  ].filter(Boolean));
 }
 
 function paintWho(r) {

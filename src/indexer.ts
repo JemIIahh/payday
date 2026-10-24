@@ -27,19 +27,21 @@ const STREAMS = `query Streams($contract: String!, $address: String!, $limit: In
 
 /** Payday's Flow streams (Sablier Flow v3 on Base) that `address` pays, receives, or once held, newest first. */
 export async function indexedStreams(address: Address, limit = 100): Promise<IndexedStream[]> {
-  let response: Response;
+  let body: { data?: { FlowStream?: IndexedStream[] }; errors?: { message: string }[] };
   try {
-    response = await fetch(INDEXER_URL, {
+    const response = await fetch(INDEXER_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ query: STREAMS, variables: { contract: FLOW.toLowerCase(), address: address.toLowerCase(), limit } }),
       signal: AbortSignal.timeout(4_000),
     });
+    if (!response.ok) throw new Error(`indexer answered ${response.status}`);
+    body = await response.json();
   } catch (error) {
+    // Unreachable, slow, or not JSON: all mean "no history right now", never a failed tool.
     throw new IndexerUnavailable(error instanceof Error ? error.message : String(error));
   }
-  if (!response.ok) throw new IndexerUnavailable(`indexer answered ${response.status}`);
-  const body = await response.json() as { data?: { FlowStream?: IndexedStream[] }; errors?: { message: string }[] };
-  if (!body.data?.FlowStream) throw new IndexerUnavailable(body.errors?.[0]?.message ?? "indexer returned no data");
-  return body.data.FlowStream;
+  const streams = body?.data?.FlowStream;
+  if (!Array.isArray(streams)) throw new IndexerUnavailable(body?.errors?.[0]?.message ?? "indexer returned no data");
+  return streams;
 }

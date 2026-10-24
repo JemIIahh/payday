@@ -2,13 +2,12 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { encodeFunctionData, getAddress, type Address, type Hex } from "viem";
 import * as z from "zod/v4";
-import { atomicAmount } from "./paybox.js";
 import { findStreams, pastRecipients } from "./discover.js";
 import {
   FLOW, PERIODS, UserError, addressSchema, amountSchema, approvalIfNeeded, checksum, client, describeStream, descale,
   display, duration, flowAbi, flowCalls, fundingWarnings, iso, perPeriod, periodSchema, propose, proposalOutputSchema,
   ratePerSecond, readStream, readStreams, refuseContractRecipient, requireSender, resolveToken, sablierUrl,
-  streamIdSchema, streamSummarySchema, symbolFor, tokenSchema, tokenSymbols, walletFunds, type Period, type StreamState, type Token,
+  streamIdSchema, streamSummarySchema, symbolFor, tokenAmount, tokenSchema, tokenSymbols, walletFunds, type Period, type StreamState, type Token,
 } from "./flow.js";
 import { IndexerUnavailable, INDEXER_URL, indexedStreams } from "./indexer.js";
 import { namesFor, partySchema, resolveParty, who } from "./names.js";
@@ -48,7 +47,7 @@ function data(text: string, structuredContent: Record<string, unknown>): ToolRes
 /** Funding for a new stream: an explicit deposit, or enough for `runway_days`, defaulting to one period. */
 function initialDeposit(rate: bigint, token: Token, period: Period, deposit?: string, runwayDays?: number): bigint {
   if (deposit !== undefined && runwayDays !== undefined) throw new UserError("Give either deposit or runway_days, not both.");
-  if (deposit !== undefined) return BigInt(atomicAmount(deposit, token.decimals));
+  if (deposit !== undefined) return tokenAmount(deposit, token, "deposit");
   const seconds = runwayDays !== undefined ? Math.round(runwayDays * 86_400) : PERIODS[period];
   return descale(rate * BigInt(seconds), token.decimals, "nearest");
 }
@@ -73,9 +72,23 @@ function runwayText(deposit: bigint, rate: bigint, decimals: number): string {
 
 function optionalAmount(amount: string | undefined, token: Token, label: string): bigint {
   if (amount === undefined) return 0n;
-  const value = BigInt(atomicAmount(amount, token.decimals));
+  const value = tokenAmount(amount, token, label);
   if (value === 0n) throw new UserError(`${label} must be greater than zero.`);
   return value;
+}
+
+// One transaction carries at most this many streams, to stay well inside PayBox's limits.
+const MAX_BATCH = 25;
+
+/** "… and 5 more" when a bulk tool had to leave some streams for a second call. */
+function remainder(left: number, what: string): string {
+  return left > 0 ? ` ${left} more ${what}; call again after this confirms.` : "";
+}
+
+/** A payee as the owner should see them before approving: their label, name and full address. */
+function payee(label: string | undefined, address: Address, names: Map<Address, string>): string {
+  const id = who(address, names);
+  return label && label !== names.get(address) ? `${label}: ${id}` : id;
 }
 
 async function streamToken(stream: StreamState): Promise<Token> {
@@ -93,7 +106,7 @@ function newRecipientWarning(recipients: Address[], past: Set<Address>, names: M
   const fresh = recipients.filter((address) => !past.has(address));
   if (fresh.length === 0) return [];
   if (fresh.length === 1) return [`First Sablier stream from this wallet to ${who(fresh[0]!, names)}. Check the address is right.`];
-  return [`First Sablier stream from this wallet to ${fresh.length} of these payees: ${fresh.map((address) => names.get(address) ?? address).join(", ")}. Check each address.`];
+  return [`First Sablier stream from this wallet to ${fresh.length} of these payees: ${fresh.map((address) => who(address, names)).join(", ")}. Check each address.`];
 }
 
 const runwayDaysSchema = z.number().positive().max(3_650).describe("Fund this many days of streaming up front.");
@@ -240,7 +253,7 @@ function createServer() {
       const rate = ratePerSecond(payee.amount, args.per);
       const deposit = initialDeposit(rate, token, args.per, undefined, args.runway_days);
       if (deposit === 0n) throw new UserError(`payees[${index}]'s deposit rounds to zero.`);
-      return { recipient, name, rate, amount: payee.amount, deposit, payNow: optionalAmount(payee.pay_now, token, `payees[${index}].pay_now`), label: payee.label ?? name ?? recipient.slice(0, 8) };
+      return { recipient, name, rate, amount: payee.amount, deposit, payNow: optionalAmount(payee.pay_now, token, `payees[${index}].pay_now`), label: payee.label };
     });
     const total = rows.reduce((sum, row) => sum + row.deposit + row.payNow, 0n);
     const monthly = rows.reduce((sum, row) => sum + descale(row.rate * MONTH, token.decimals), 0n);
@@ -263,8 +276,9 @@ function createServer() {
       to: FLOW,
       data: encodeFunctionData({ abi: flowAbi, functionName: "batch", args: [calls] }),
       step: "create_payroll",
-      summary: `Start ${rows.length} pay streams in one transaction: ${rows.map((row) => `${row.label} ${row.amount} ${token.symbol}/${args.per}${row.payNow > 0n ? ` (+${display(row.payNow, token.decimals)} now)` : ""}`).join(", ")}. Total ${display(total, token.decimals)} ${token.symbol} funds ${runway} days${upfront > 0n ? `, including ${display(upfront, token.decimals)} paid up front` : ""}; payroll burn is ${display(monthly, token.decimals)} ${token.symbol} per 30 days.`,
-      details: { token: token.symbol, streams: rows.length.toString(), total_deposit: display(total, token.decimals), paid_up_front: display(upfront, token.decimals), monthly_burn: display(monthly, token.decimals), runway_days: runway.toString(), contract: FLOW },
+      // Every payee is shown with their full address: a label alone is whatever the agent typed.
+      summary: `Start ${rows.length} pay streams in one transaction: ${rows.map((row) => `${payee(row.label, row.recipient, names)} ${row.amount} ${token.symbol}/${args.per}${row.payNow > 0n ? ` (+${display(row.payNow, token.decimals)} now)` : ""}`).join("; ")}. Total ${display(total, token.decimals)} ${token.symbol} funds ${runway} days${upfront > 0n ? `, including ${display(upfront, token.decimals)} paid up front` : ""}; payroll burn is ${display(monthly, token.decimals)} ${token.symbol} per 30 days.`,
+      details: { token: token.symbol, streams: rows.length.toString(), recipients: rows.map((row) => row.recipient).join(","), total_deposit: display(total, token.decimals), paid_up_front: display(upfront, token.decimals), monthly_burn: display(monthly, token.decimals), runway_days: runway.toString(), contract: FLOW },
       warnings,
     });
   }));
@@ -319,26 +333,28 @@ function createServer() {
       namesFor([owner, ...found.streams.flatMap((stream) => [stream.sender, stream.recipient])]),
     ]);
     if (party.name) names.set(owner, party.name);
-    const monthlyOut: Record<string, bigint> = {};
-    const monthlyIn: Record<string, bigint> = {};
-    const waiting: Record<string, bigint> = {};
-    const decimalsFor: Record<string, number> = {};
+    // Totals cover every stream found; the rows list the newest 25. Token labels (never raw symbols) key the totals.
+    const monthlyOut: Record<string, bigint> = Object.create(null);
+    const monthlyIn: Record<string, bigint> = Object.create(null);
+    const waiting: Record<string, bigint> = Object.create(null);
+    const decimalsFor: Record<string, number> = Object.create(null);
     const needsAttention: { stream_id: string; reason: string }[] = [];
     const outgoing = [];
     const incoming = [];
-    for (const stream of found.streams) {
+    for (const [index, stream] of found.streams.entries()) {
       const symbol = symbols.get(getAddress(stream.token)) ?? "TOKEN";
       const row = describeStream(stream, symbol, names);
+      const listed = index < MAX_BATCH;
       const monthly = stream.status === "streaming" || stream.status === "streaming_insolvent" ? descale(stream.rate * MONTH, stream.decimals) : 0n;
       decimalsFor[symbol] = stream.decimals;
       if (stream.sender === owner) {
-        outgoing.push(row);
+        if (listed) outgoing.push(row);
         monthlyOut[symbol] = (monthlyOut[symbol] ?? 0n) + monthly;
         if (stream.status === "streaming_insolvent" || stream.status === "paused_insolvent") needsAttention.push({ stream_id: row.stream_id, reason: `out of funds; owes ${row.unpaid_debt} ${symbol} it cannot pay` });
         else if (stream.status === "streaming" && stream.depletionTime && Number(stream.depletionTime) - stream.readAt < 7 * 86_400) needsAttention.push({ stream_id: row.stream_id, reason: `runs out in ${row.runway}` });
       }
       if (stream.recipient === owner) {
-        incoming.push(row);
+        if (listed) incoming.push(row);
         monthlyIn[symbol] = (monthlyIn[symbol] ?? 0n) + monthly;
         if (stream.withdrawable > 0n) waiting[symbol] = (waiting[symbol] ?? 0n) + stream.withdrawable;
       }
@@ -353,7 +369,7 @@ function createServer() {
     if (found.streams.length) nextSteps.push({ tool: "payment_statement", arguments: { address: owner, month: currentMonth() }, why: "A statement of this month's pay with the transaction behind every number, plus a printable payslip link." });
     const label = party.name ?? names.get(owner) ?? owner;
     const text = [
-      `${label}: pays ${outgoing.length} stream(s), receives ${incoming.length}.${found.total > found.streams.length ? ` Showing the newest ${found.streams.length} of ${found.total}.` : ""}`,
+      `${label}: pays ${found.streams.filter((stream) => stream.sender === owner).length} stream(s), receives ${found.streams.filter((stream) => stream.recipient === owner).length}.${found.streams.length > MAX_BATCH ? ` Listing the newest ${MAX_BATCH} of ${found.streams.length}; totals cover all of them.` : ""}`,
       Object.keys(out).length ? `Monthly outflow: ${Object.entries(out).map(([s, v]) => `${v} ${s}`).join(", ")}.` : "",
       Object.keys(inn).length ? `Monthly inflow: ${Object.entries(inn).map(([s, v]) => `${v} ${s}`).join(", ")}.` : "",
       Object.keys(ready).length ? `Ready to withdraw: ${Object.entries(ready).map(([s, v]) => `${v} ${s}`).join(", ")}.` : "",
@@ -385,7 +401,7 @@ function createServer() {
     const token = await streamToken(stream);
     let amount: bigint;
     if (args.amount !== undefined) {
-      amount = BigInt(atomicAmount(args.amount, token.decimals));
+      amount = tokenAmount(args.amount, token, "amount");
     } else {
       amount = shortfall(stream, args.runway_days!);
       if (amount === 0n) throw new UserError(`Stream ${args.stream_id} is already funded beyond ${args.runway_days} days (runway ${describeStream(stream, token.symbol).runway}).`);
@@ -430,12 +446,14 @@ function createServer() {
     } else {
       streams = (await findStreams(funder, "sender")).streams;
     }
-    streams = streams.filter((stream) => stream.status !== "voided" && shortfall(stream, args.runway_days) > 0n);
-    if (streams.length === 0) throw new UserError(`Every ${args.stream_ids ? "listed" : "running"} stream is already funded for ${args.runway_days} days.`);
-    const tokens = new Set(streams.map((stream) => stream.token));
-    if (tokens.size > 1) throw new UserError("These streams use different tokens; top up one token at a time by passing stream_ids.");
-    const token = await streamToken(streams[0]!);
-    const rows = streams.map((stream) => ({ stream, amount: shortfall(stream, args.runway_days) }));
+    const short = streams.filter((stream) => stream.status !== "voided" && shortfall(stream, args.runway_days) > 0n);
+    if (short.length === 0) throw new UserError(`Every ${args.stream_ids ? "listed" : "running"} stream is already funded for ${args.runway_days} days.`);
+    if (new Set(short.map((stream) => stream.token)).size > 1) {
+      const labels = await tokenSymbols(short.map((stream) => stream.token));
+      throw new UserError(`These streams use different tokens (${[...new Set(labels.values())].join(", ")}); top up one token at a time by passing stream_ids.`);
+    }
+    const token = await streamToken(short[0]!);
+    const rows = short.slice(0, MAX_BATCH).map((stream) => ({ stream, amount: shortfall(stream, args.runway_days) }));
     const total = rows.reduce((sum, row) => sum + row.amount, 0n);
     const burn = rows.reduce((sum, row) => sum + row.stream.rate, 0n);
     const headroom = descale(burn * 3_600n, token.decimals, "up");
@@ -447,7 +465,7 @@ function createServer() {
       to: FLOW,
       data: flowCalls(rows.map((row) => encodeFunctionData({ abi: flowAbi, functionName: "deposit", args: [row.stream.id, row.amount, row.stream.sender, row.stream.recipient] }))),
       step: "deposit_many",
-      summary: `Fund ${rows.length} stream(s) for ${args.runway_days} days in one transaction: ${rows.map((row) => `#${row.stream.id} to ${names.get(row.stream.recipient) ?? row.stream.recipient} +${display(row.amount, token.decimals)}${row.stream.uncoveredDebt > 0n ? " (clears unpaid debt)" : ""}`).join("; ")}. Total ${display(total, token.decimals)} ${token.symbol}.`,
+      summary: `Fund ${rows.length} stream(s) for ${args.runway_days} days in one transaction: ${rows.map((row) => `#${row.stream.id} to ${who(row.stream.recipient, names)} +${display(row.amount, token.decimals)}${row.stream.uncoveredDebt > 0n ? " (clears unpaid debt)" : ""}`).join("; ")}. Total ${display(total, token.decimals)} ${token.symbol}.${remainder(short.length - rows.length, "streams also need funding")}`,
       details: { token: token.symbol, streams: rows.length.toString(), total: display(total, token.decimals), runway_days: args.runway_days.toString(), stream_ids: rows.map((row) => row.stream.id.toString()).join(",") },
       warnings,
     });
@@ -561,14 +579,15 @@ function createServer() {
     const sender = checksum(args.sender, "sender");
     const stream = await readStream(args.stream_id);
     requireSender(stream, sender);
-    const calls = endCalls(stream);
+    const plan = endPlan(stream);
+    if (!plan) throw new UserError(`Stream ${stream.id} is already stopped with nothing left to refund.`);
     const { symbol } = await streamToken(stream);
     return propose({
       to: FLOW,
-      data: flowCalls(calls),
+      data: flowCalls(plan.calls),
       step: "end",
-      summary: `End stream #${stream.id}: stop pay to ${stream.recipient} and return about ${display(stream.refundable, stream.decimals)} ${symbol} of unearned funds to ${sender} (slightly less if it confirms later). The recipient keeps ${display(stream.totalDebt, stream.decimals)} ${symbol} already earned.`,
-      details: { stream_id: stream.id.toString(), refund_estimate: display(stream.refundable, stream.decimals), recipient_keeps: display(stream.totalDebt, stream.decimals) },
+      summary: `End stream #${stream.id} to ${stream.recipient}: ${plan.what(symbol)} Refunds go to ${sender}.`,
+      details: { stream_id: stream.id.toString(), refund_estimate: display(plan.refund, stream.decimals), recipient_keeps: display(stream.totalDebt, stream.decimals) },
     });
   }));
 
@@ -586,16 +605,19 @@ function createServer() {
     if (missing.length) throw new UserError(`Stream(s) ${missing.join(", ")} do not exist on Sablier Flow (Base).`);
     const streams = [...found.values()];
     for (const stream of streams) requireSender(stream, sender);
-    const rows = streams.map((stream) => ({ stream, calls: endCalls(stream, false) })).filter((row) => row.calls.length > 0);
+    const rows = streams.flatMap((stream) => {
+      const plan = endPlan(stream);
+      return plan ? [{ stream, plan }] : [];
+    });
     if (rows.length === 0) throw new UserError("Those streams are already stopped with nothing left to refund.");
     const [symbols, names] = await Promise.all([tokenSymbols(rows.map((row) => row.stream.token)), namesFor(rows.map((row) => row.stream.recipient))]);
     const symbolOf = (stream: StreamState) => symbols.get(getAddress(stream.token)) ?? "TOKEN";
     const skipped = streams.length - rows.length;
     return propose({
       to: FLOW,
-      data: flowCalls(rows.flatMap((row) => row.calls)),
+      data: flowCalls(rows.flatMap((row) => row.plan.calls)),
       step: "end_many",
-      summary: `End ${rows.length} stream(s) in one transaction: ${rows.map(({ stream }) => `#${stream.id} to ${names.get(stream.recipient) ?? stream.recipient} (refund about ${display(stream.refundable, stream.decimals)} ${symbolOf(stream)}, they keep ${display(stream.totalDebt, stream.decimals)})`).join("; ")}.${skipped ? ` ${skipped} already stopped with nothing to refund.` : ""} Refunds go to ${sender}.`,
+      summary: `End ${rows.length} stream(s) in one transaction. ${rows.map(({ stream, plan }) => `#${stream.id} to ${who(stream.recipient, names)}: ${plan.what(symbolOf(stream))}`).join(" ")}${skipped ? ` ${skipped} already stopped with nothing to refund.` : ""} Refunds go to ${sender}.`,
       details: { streams: rows.length.toString(), stream_ids: rows.map((row) => row.stream.id.toString()).join(","), sender },
     });
   }));
@@ -614,17 +636,20 @@ function createServer() {
     const sender = checksum(args.sender, "sender");
     const stream = await readStream(args.stream_id);
     requireSender(stream, sender);
-    if (stream.status === "voided") throw new UserError(`Stream ${args.stream_id} is voided; use end_stream to refund it.`);
+    if (stream.status === "voided") throw new UserError(`Stream ${args.stream_id} has ended for good; end_stream returns whatever is left in it.`);
+    if (stream.status === "paused" || stream.status === "paused_insolvent") {
+      throw new UserError(`Stream ${args.stream_id} is paused, so it uses no pay and keep_days has nothing to measure. Use end_stream to take back all unearned funds, or resume it first.`);
+    }
     // Leave keep_days of pay plus ten minutes of margin, because the refundable amount shrinks while the proposal waits.
     const keep = descale(stream.rate * BigInt(Math.round(args.keep_days * 86_400) + 600), stream.decimals, "up");
     const amount = stream.refundable > keep ? stream.refundable - keep : 0n;
     if (amount === 0n) throw new UserError(`Stream ${args.stream_id} holds no more than ${args.keep_days} days of pay; nothing to reclaim.`);
     const { symbol } = await streamToken(stream);
     const left = stream.balance - amount > stream.totalDebt ? stream.balance - amount - stream.totalDebt : 0n;
-    const runway = stream.rate > 0n ? runwayText(left, stream.rate, stream.decimals) : "n/a (paused)";
-    const after = stream.rate > 0n
-      ? `The stream keeps running with about ${runway} of pay left`
-      : "The stream stays paused; fund it again when you resume it";
+    const runway = runwayText(left, stream.rate, stream.decimals);
+    const after = stream.status === "pending"
+      ? `The stream still starts as planned, with about ${runway} of pay in it`
+      : `The stream keeps running with about ${runway} of pay left`;
     return propose({
       to: FLOW,
       data: encodeFunctionData({ abi: flowAbi, functionName: "refund", args: [stream.id, amount] }),
@@ -643,16 +668,17 @@ function createServer() {
   }, guarded(async ({ stream_id }) => {
     const stream = await readStream(stream_id);
     if (stream.withdrawable === 0n) throw new UserError(`Nothing to withdraw from stream ${stream_id} yet.`);
-    const [fee, token] = await Promise.all([
+    const [minFee, token] = await Promise.all([
       client.readContract({ address: FLOW, abi: flowAbi, functionName: "calculateMinFeeWei", args: [stream.id] }),
       streamToken(stream),
     ]);
+    const fee = withHeadroom(minFee);
     return propose({
       to: FLOW,
       value: fee,
       data: encodeFunctionData({ abi: flowAbi, functionName: "withdrawMax", args: [stream.id, stream.recipient] }),
       step: "withdraw",
-      summary: `Withdraw at least ${display(stream.withdrawable, stream.decimals)} ${token.symbol} earned on stream #${stream.id} to ${stream.recipient}${fee > 0n ? `, paying Sablier's ${display(fee, 18)} ETH fee` : ""}.`,
+      summary: `Withdraw at least ${display(stream.withdrawable, stream.decimals)} ${token.symbol} earned on stream #${stream.id} to ${stream.recipient}${fee > 0n ? `, paying Sablier's withdrawal fee of up to ${display(fee, 18)} ETH` : ""}.`,
       details: { stream_id: stream.id.toString(), withdrawable: display(stream.withdrawable, stream.decimals), fee_eth: display(fee, 18), to: stream.recipient },
     });
   }));
@@ -667,15 +693,16 @@ function createServer() {
     const party = await resolveParty(args.recipient, "recipient");
     const recipient = party.address;
     const { streams } = await findStreams(recipient, "recipient");
-    const ready = streams.filter((stream) => stream.withdrawable > 0n);
-    if (ready.length === 0) throw new UserError(`Nothing to withdraw yet for ${party.name ?? recipient}${streams.length ? ` across ${streams.length} stream(s)` : ": no streams pay this address"}.`);
+    const waiting = streams.filter((stream) => stream.withdrawable > 0n);
+    if (waiting.length === 0) throw new UserError(`Nothing to withdraw yet for ${party.name ?? recipient}${streams.length ? ` across ${streams.length} stream(s)` : ": no streams pay this address"}.`);
+    const ready = waiting.slice(0, MAX_BATCH);
     const [fees, symbols] = await Promise.all([
       client.multicall({ contracts: ready.map((stream) => ({ address: FLOW, abi: flowAbi, functionName: "calculateMinFeeWei", args: [stream.id] }) as const), allowFailure: false }),
       tokenSymbols(ready.map((stream) => stream.token)),
     ]);
     // Inside Flow's batch every call sees the same msg.value, so the largest single fee covers them all.
-    const fee = fees.reduce((max, value) => (value > max ? value : max), 0n);
-    const sums: Record<string, { amount: bigint; decimals: number }> = {};
+    const fee = withHeadroom(fees.reduce((max, value) => (value > max ? value : max), 0n));
+    const sums: Record<string, { amount: bigint; decimals: number }> = Object.create(null);
     for (const stream of ready) {
       const symbol = symbols.get(getAddress(stream.token)) ?? "TOKEN";
       const row = sums[symbol] ??= { amount: 0n, decimals: stream.decimals };
@@ -687,7 +714,7 @@ function createServer() {
       value: fee,
       data: flowCalls(ready.map((stream) => encodeFunctionData({ abi: flowAbi, functionName: "withdrawMax", args: [stream.id, recipient] }))),
       step: "withdraw_many",
-      summary: `Collect at least ${total} earned on ${ready.length} stream(s) (${ready.map((stream) => `#${stream.id}`).join(", ")}) to ${who(recipient, party.name ? new Map([[recipient, party.name]]) : new Map())} in one transaction${fee > 0n ? `, paying Sablier's ${display(fee, 18)} ETH fee` : ""}.`,
+      summary: `Collect at least ${total} earned on ${ready.length} stream(s) (${ready.map((stream) => `#${stream.id}`).join(", ")}) to ${who(recipient, party.name ? new Map([[recipient, party.name]]) : new Map())} in one transaction${fee > 0n ? `, paying Sablier's withdrawal fee of up to ${display(fee, 18)} ETH` : ""}.${remainder(waiting.length - ready.length, "streams also have pay waiting")}`,
       details: { recipient, streams: ready.length.toString(), stream_ids: ready.map((stream) => stream.id.toString()).join(","), total, fee_eth: display(fee, 18) },
     });
   }));
@@ -826,7 +853,10 @@ function createServer() {
     if (args.note) params.set("note", args.note);
     const link = `${SITE}?${params}`;
     const payee = party.name ?? party.address;
-    const prompt = `Using the Payday plugin, start paying ${payee}${party.name ? ` (${party.address})` : ""} ${args.amount} ${token.symbol} per ${args.per} from my PayBox Base wallet, funded for ${days} days.${args.note ? ` It is for: ${args.note}.` : ""}`;
+    // The note stays on the page and out of the sentence: whatever the requester typed must never read as an
+    // instruction to the payer's agent. Tokens other than USDC/EURC are named by address so the agent can act on it.
+    const what = symbolFor(token.address) ? `${args.amount} ${token.symbol}` : `${args.amount} of the token ${token.address}`;
+    const prompt = `Using the Payday plugin, start paying ${payee}${party.name ? ` (${party.address})` : ""} ${what} per ${args.per} from my PayBox Base wallet, funded for ${days} days.`;
     return data(
       `Share this link: ${link}\nWhoever opens it sees the request (${args.amount} ${token.symbol} per ${args.per}, ${pays.day}/day) and can copy this sentence to their agent:\n"${prompt}"`,
       { link, prompt, recipient: party.address, recipient_name: party.name, pays },
@@ -836,21 +866,46 @@ function createServer() {
   return server;
 }
 
-/** Calls that stop a stream and refund what is unearned; empty when there is nothing to do. */
-function endCalls(stream: StreamState, strict = true): Hex[] {
-  if (stream.status === "voided") {
-    if (strict) throw new UserError(`Stream ${stream.id} is already voided.`);
-    return [];
+/** Sablier's withdrawal fee is priced in USD through an oracle; 10% headroom survives ETH moving while a proposal waits. */
+function withHeadroom(fee: bigint): bigint {
+  return fee > 0n ? fee + fee / 10n : 0n;
+}
+
+/**
+ * How to end a stream, or null when there is nothing to do:
+ * - running: pause, then refund what's unearned (skipped if it would run dry before the proposal confirms,
+ *   since refundMax reverts at zero and would take the pause down with it);
+ * - not started yet: void it (pause reverts on pending streams), then refund the deposit;
+ * - paused or already ended: refund whatever is left.
+ */
+function endPlan(stream: StreamState): { calls: Hex[]; refund: bigint; what: (symbol: string) => string } | null {
+  const call = (functionName: "pause" | "void" | "refundMax") => encodeFunctionData({ abi: flowAbi, functionName, args: [stream.id] });
+  const amount = (value: bigint, symbol: string) => `${display(value, stream.decimals)} ${symbol}`;
+  const keeps = (symbol: string) => `They keep the ${amount(stream.totalDebt, symbol)} already earned.`;
+  if (stream.status === "streaming" || stream.status === "streaming_insolvent") {
+    const margin = descale(stream.rate * 600n, stream.decimals, "up");
+    const refund = stream.refundable > margin ? stream.refundable : 0n;
+    return {
+      calls: refund > 0n ? [call("pause"), call("refundMax")] : [call("pause")],
+      refund,
+      what: (symbol) => refund > 0n
+        ? `stop the pay and return about ${amount(refund, symbol)} of unearned funds (slightly less if it confirms later). ${keeps(symbol)}`
+        : `stop the pay; it has under ten minutes of funds left, so there is nothing meaningful to refund. ${keeps(symbol)}`,
+    };
   }
-  const streaming = stream.status === "streaming" || stream.status === "streaming_insolvent";
-  if (!streaming && stream.refundable === 0n) {
-    if (strict) throw new UserError(`Stream ${stream.id} is already paused with nothing left to refund.`);
-    return [];
+  if (stream.status === "pending") {
+    return {
+      calls: stream.refundable > 0n ? [call("void"), call("refundMax")] : [call("void")],
+      refund: stream.refundable,
+      what: (symbol) => `cancel it before it starts${stream.refundable > 0n ? ` and return the ${amount(stream.refundable, symbol)} deposited` : ""}. Nothing has been earned yet.`,
+    };
   }
-  const calls: Hex[] = [];
-  if (streaming) calls.push(encodeFunctionData({ abi: flowAbi, functionName: "pause", args: [stream.id] }));
-  if (stream.refundable > 0n) calls.push(encodeFunctionData({ abi: flowAbi, functionName: "refundMax", args: [stream.id] }));
-  return calls;
+  if (stream.refundable === 0n) return null;
+  return {
+    calls: [call("refundMax")],
+    refund: stream.refundable,
+    what: (symbol) => `it is already ${stream.status === "voided" ? "ended" : "paused"}; return the ${amount(stream.refundable, symbol)} of unearned funds still in it. ${keeps(symbol)}`,
+  };
 }
 
 serveStdio(createServer, { legacy: "reject" });

@@ -104,23 +104,38 @@ ok("plan_stream", !plan.isError && plan.structuredContent.pays.month === "3000" 
 const afford = await callTool("plan_stream", { amount: "3000", per: "month", sender: SENDER });
 ok("plan_stream affordability", !afford.isError && Number(afford.structuredContent.affordability?.months_covered) > 1, afford.content[0].text.split(". ").slice(-1)[0]);
 
+// ---------- a stream that hasn't started can be cancelled, deposit and all ----------
+const pendingId = first;
+await proposeAndRun("start_stream (starts in 2 days)", "start_stream", { sender: SENDER, recipient: PAYEES[2], amount: "300", per: "month", deposit: "10", start_at: new Date(Date.now() + 2 * 86_400_000).toISOString() });
+let s = await status(pendingId);
+ok("pending until its start", s?.status === "pending" && s.starts_at !== null, `starts ${s?.starts_at}`);
+const beforeCancel = await usdc(SENDER);
+await proposeAndRun("end_stream (cancel before start)", "end_stream", { stream_id: String(pendingId), sender: SENDER });
+s = await status(pendingId);
+ok("cancelled for good, deposit back", s.status === "voided" && s.balance === "0" && (await usdc(SENDER)) - beforeCancel === 10_000_000n, `${s.status}, +10 USDC`);
+const tooPrecise = await callTool("start_stream", { sender: SENDER, recipient: PAYEES[0], amount: "720", per: "month", deposit: "1.1234567" });
+ok("too many decimals explained", tooPrecise.isError === true && tooPrecise.content[0].text.includes("decimal places"), tooPrecise.content[0].text);
+
 // ---------- one stream: lifecycle ----------
 await proposeAndRun("start_stream", "start_stream", { sender: SENDER, recipient: PAYEES[0], amount: "720", per: "month", deposit: "24" });
-let s = await status(first);
-ok("stream created", s?.status === "streaming" && s.recipient.toLowerCase() === PAYEES[0].toLowerCase(), `#${first} ${s?.rate.hour}/hour runway ${s?.runway}`);
+const L = first + 1; // the lifecycle stream; the payroll streams follow it
+s = await status(L);
+ok("stream created", s?.status === "streaming" && s.recipient.toLowerCase() === PAYEES[0].toLowerCase(), `#${L} ${s?.rate.hour}/hour runway ${s?.runway}`);
 
 await warp(3_600);
-s = await status(first);
+s = await status(L);
 ok("accrues by the second", Number(s.withdrawable_now) >= 1 && Number(s.withdrawable_now) <= 1.01, `withdrawable after 1h = ${s.withdrawable_now}`);
 
 // payroll: three people, one transaction, one of them paid something up front
 const bobBefore = await usdc(PAYEES[1]);
-await proposeAndRun("start_payroll", "start_payroll", { sender: SENDER, per: "month", runway_days: 7, payees: [
+const payrollRun = await proposeAndRun("start_payroll", "start_payroll", { sender: SENDER, per: "month", runway_days: 7, payees: [
   { recipient: PAYEES[1], amount: "300", label: "Ada", pay_now: "50" },
   { recipient: PAYEES[2], amount: "450", label: "Bayo" },
   { recipient: PAYEES[3], amount: "600", label: "Chi" },
 ] });
-const payroll = await statuses([first + 1, first + 2, first + 3]);
+const summary = payrollRun?.structuredContent.summary.toLowerCase() ?? "";
+ok("payroll summary shows every full address", PAYEES.slice(1).every((payee) => summary.includes(payee.toLowerCase())), "labels never stand alone");
+const payroll = await statuses([L + 1, L + 2, L + 3]);
 ok("payroll streams live", payroll.length === 3 && payroll.every((row) => row.status === "streaming"), payroll.map((row) => `${row.stream_id}:${row.rate.month}`).join(" "));
 ok("payroll pay_now paid", (await usdc(PAYEES[1])) - bobBefore === 50_000_000n, "Ada got 50 USDC up front");
 
@@ -128,42 +143,42 @@ const overview = await callTool("list_streams", { address: SENDER });
 const steps = overview.structuredContent?.next_steps?.map((step) => step.tool) ?? [];
 ok("list_streams", !overview.isError && overview.structuredContent.outgoing.length >= 4 && steps.includes("top_up_streams"), overview.content[0].text.replace(/\n/g, " | ").slice(0, 200));
 
-await proposeAndRun("change_stream_rate", "change_stream_rate", { stream_id: String(first), sender: SENDER, amount: "1440", per: "month" });
-s = await status(first);
+await proposeAndRun("change_stream_rate", "change_stream_rate", { stream_id: String(L), sender: SENDER, amount: "1440", per: "month" });
+s = await status(L);
 ok("rate changed", s.rate.hour === "2", `${s.rate.hour}/hour`);
-await proposeAndRun("pause_stream", "pause_stream", { stream_id: String(first), sender: SENDER });
-s = await status(first);
+await proposeAndRun("pause_stream", "pause_stream", { stream_id: String(L), sender: SENDER });
+s = await status(L);
 ok("paused", s.status === "paused", s.status);
-await proposeAndRun("resume_stream", "resume_stream", { stream_id: String(first), sender: SENDER, amount: "720", per: "month" });
-s = await status(first);
+await proposeAndRun("resume_stream", "resume_stream", { stream_id: String(L), sender: SENDER, amount: "720", per: "month" });
+s = await status(L);
 ok("resumed", s.status === "streaming", s.status);
 
-await proposeAndRun("top_up_stream", "top_up_stream", { stream_id: String(first), funder: SENDER, runway_days: 10 });
-s = await status(first);
+await proposeAndRun("top_up_stream", "top_up_stream", { stream_id: String(L), funder: SENDER, runway_days: 10 });
+s = await status(L);
 ok("topped up", s.runway.startsWith("9d") || s.runway.startsWith("10d"), `runway ${s.runway}, balance ${s.balance}`);
 
 // reclaim: keep 2 days, take the rest back, stream keeps running
 const beforeReclaim = await usdc(SENDER);
-await proposeAndRun("reclaim_funds", "reclaim_funds", { stream_id: String(first), sender: SENDER, keep_days: 2 });
-s = await status(first);
+await proposeAndRun("reclaim_funds", "reclaim_funds", { stream_id: String(L), sender: SENDER, keep_days: 2 });
+s = await status(L);
 ok("reclaimed, still streaming", s.status === "streaming" && (s.runway.startsWith("1d") || s.runway.startsWith("2d")) && (await usdc(SENDER)) > beforeReclaim, `runway ${s.runway}`);
 
 // pause, then resume and refuel in the same transaction
-await proposeAndRun("pause_stream (again)", "pause_stream", { stream_id: String(first), sender: SENDER });
-await proposeAndRun("resume_stream + deposit", "resume_stream", { stream_id: String(first), sender: SENDER, amount: "720", per: "month", runway_days: 5 });
-s = await status(first);
+await proposeAndRun("pause_stream (again)", "pause_stream", { stream_id: String(L), sender: SENDER });
+await proposeAndRun("resume_stream + deposit", "resume_stream", { stream_id: String(L), sender: SENDER, amount: "720", per: "month", runway_days: 5 });
+s = await status(L);
 ok("resumed with runway", s.status === "streaming" && days(s.runway) >= 4, `runway ${s.runway}`);
 
 // recipient payout (anyone can trigger; funds go to the recipient)
 await warp(1_800);
 const payeeBefore = await usdc(PAYEES[0]);
-await proposeAndRun("withdraw_from_stream", "withdraw_from_stream", { stream_id: String(first) });
+await proposeAndRun("withdraw_from_stream", "withdraw_from_stream", { stream_id: String(L) });
 ok("recipient paid", (await usdc(PAYEES[0])) > payeeBefore, `+${Number((await usdc(PAYEES[0])) - payeeBefore) / 1e6} USDC`);
 
 // end: pause + refund in one transaction
 const senderMid = await usdc(SENDER);
-await proposeAndRun("end_stream", "end_stream", { stream_id: String(first), sender: SENDER });
-s = await status(first);
+await proposeAndRun("end_stream", "end_stream", { stream_id: String(L), sender: SENDER });
+s = await status(L);
 ok("ended + refunded", s.status === "paused" && s.refundable_to_sender === "0" && (await usdc(SENDER)) > senderMid, `refund +${Number((await usdc(SENDER)) - senderMid) / 1e6} USDC, recipient still owed ${s.withdrawable_now}`);
 
 // ---------- names, pay_now, warnings ----------
@@ -181,7 +196,7 @@ ok("per-hour typo warned", !typo.isError && typo.structuredContent.warnings.some
 // ---------- payroll operations ----------
 await warp(6 * 86_400); // payroll (7 days funded) is now close to running out
 const tops = await proposeAndRun("top_up_streams", "top_up_streams", { funder: SENDER, runway_days: 30 });
-const funded = await statuses([first + 1, first + 2, first + 3]);
+const funded = await statuses([L + 1, L + 2, L + 3]);
 ok("payroll refuelled in one transaction", Number(tops?.structuredContent.details.streams) >= 3 && funded.every((row) => days(row.runway) >= 29), funded.map((row) => `#${row.stream_id} ${row.runway}`).join(" "));
 
 // a second stream to Ada so withdraw_all has two to collect
@@ -193,17 +208,18 @@ const adaGain = (await usdc(PAYEES[1])) - adaBefore;
 ok("withdraw_all collected both streams", collect?.structuredContent.details.streams === "2" && adaGain > 0n, `+${Number(adaGain) / 1e6} USDC from #${collect?.structuredContent.details.stream_ids}`);
 
 const beforeEnd = await usdc(SENDER);
-await proposeAndRun("end_streams", "end_streams", { sender: SENDER, stream_ids: [String(first + 1), String(first + 2), String(first + 3)] });
-const ended = await statuses([first + 1, first + 2, first + 3]);
+await proposeAndRun("end_streams", "end_streams", { sender: SENDER, stream_ids: [String(L + 1), String(L + 2), String(L + 3)] });
+const ended = await statuses([L + 1, L + 2, L + 3]);
 ok("payroll ended + refunded", ended.every((row) => row.status === "paused" && row.refundable_to_sender === "0") && (await usdc(SENDER)) > beforeEnd, `refund +${Number((await usdc(SENDER)) - beforeEnd) / 1e6} USDC`);
 
 // ---------- pay-me link ----------
 const request = await callTool("request_payment", { recipient: NAME, amount: "3000", per: "month", note: "Design retainer" });
 const link = request.structuredContent ? new URL(request.structuredContent.link) : null;
 ok("request_payment", !request.isError && link?.searchParams.get("pay") === NAMED && link.searchParams.get("name") === NAME && request.structuredContent.prompt.includes(NAME), request.structuredContent?.link);
+ok("the note stays out of the agent sentence", !request.structuredContent?.prompt.includes("Design retainer"), request.structuredContent?.prompt);
 
 // ---------- guard rails ----------
-const notSender = await callTool("pause_stream", { stream_id: String(first + 1), sender: PAYEES[0] });
+const notSender = await callTool("pause_stream", { stream_id: String(L + 1), sender: PAYEES[0] });
 ok("non-sender refused", notSender.isError === true, notSender.content[0].text);
 const broke = await callTool("start_stream", { sender: PAYEES[0], recipient: PAYEES[2], amount: "100", per: "month" });
 ok("insufficient funds refused", broke.isError === true, broke.content[0].text);

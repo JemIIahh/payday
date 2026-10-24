@@ -3,6 +3,7 @@
 import { createPublicClient, http, fallback, parseAbi, getAddress, isAddress, formatUnits, erc20Abi, namehash } from "viem";
 import { normalize } from "viem/ens";
 import { base } from "viem/chains";
+import { tokenLabel } from "../src/statement.ts";
 
 // Replaced at build time (site/build.mjs).
 const RPCS = __RPCS__;
@@ -204,7 +205,8 @@ export async function tokenSymbols(addresses) {
   const unknown = tokens.filter((t) => !symbols.has(t));
   if (unknown.length) {
     const sym = await client.multicall({ contracts: unknown.map((t) => ({ address: t, abi: erc20Abi, functionName: "symbol" })), allowFailure: true });
-    unknown.forEach((t, i) => symbols.set(t, sym[i]?.status === "success" ? String(sym[i].result).slice(0, 12) : "TOKEN"));
+    // Never trust a self-reported symbol: unknown tokens are labelled with their address (see tokenLabel).
+    unknown.forEach((t, i) => symbols.set(t, tokenLabel(t, sym[i]?.status === "success" ? String(sym[i].result) : null)));
   }
   return symbols;
 }

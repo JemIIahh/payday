@@ -1,6 +1,7 @@
 import { createPublicClient, encodeFunctionData, erc20Abi, fallback, formatUnits, getAddress, http, isAddress, parseAbi, type Address, type Hex } from "viem";
 import { base } from "viem/chains";
 import { atomicAmount, evmOutputSchema, proposeEvm } from "./paybox.js";
+import { tokenLabel } from "./statement.js";
 import * as z from "zod/v4";
 
 export const CHAIN = "eip155:8453";
@@ -23,6 +24,7 @@ export const flowAbi = parseAbi([
   "function restartAndDeposit(uint256 streamId, uint128 ratePerSecond, uint128 amount) payable",
   "function refund(uint256 streamId, uint128 amount) payable",
   "function refundMax(uint256 streamId) payable returns (uint128)",
+  "function void(uint256 streamId) payable",
   "function withdrawMax(uint256 streamId, address to) payable returns (uint128)",
   "function transferTokens(address token, address to, uint128 amount) payable",
   "function batch(bytes[] calls) payable returns (bytes[])",
@@ -97,6 +99,15 @@ export function ratePerSecond(amount: string, period: Period): bigint {
   return rate;
 }
 
+/** A decimal string in the token's smallest units, with a readable error when it has too many decimals. */
+export function tokenAmount(amount: string, token: Token, label: string): bigint {
+  const fraction = amount.split(".")[1] ?? "";
+  if (fraction.length > token.decimals) {
+    throw new UserError(`${label} has ${fraction.length} decimal places, but ${token.symbol} supports ${token.decimals}.`);
+  }
+  return BigInt(atomicAmount(amount, token.decimals));
+}
+
 /** Converts an 18-decimal scaled amount to token units. */
 export function descale(scaled: bigint, decimals: number, rounding: "down" | "up" | "nearest" = "down"): bigint {
   const factor = 10n ** BigInt(18 - decimals);
@@ -131,6 +142,8 @@ export function duration(seconds: number): string {
 
 // ---------- tokens ----------
 
+// `symbol` is a display label: USDC and EURC by name, anything else as its (sanitized) self-reported symbol
+// plus a short address, so a token that calls itself "USDC" can never pass for USDC (see tokenLabel).
 export type Token = { address: Address; symbol: string; decimals: number };
 
 export async function resolveToken(input: string): Promise<Token> {
@@ -148,7 +161,7 @@ export async function resolveToken(input: string): Promise<Token> {
   });
   if (decimals.status !== "success") throw new UserError(`${address} does not look like an ERC-20 token on Base.`);
   if (decimals.result > 18) throw new UserError("Sablier Flow supports tokens with at most 18 decimals.");
-  return { address, symbol: symbol.status === "success" ? symbol.result : "TOKEN", decimals: decimals.result };
+  return { address, symbol: tokenLabel(address, symbol.status === "success" ? symbol.result : null), decimals: decimals.result };
 }
 
 export function symbolFor(address: Address): string | undefined {
@@ -192,6 +205,7 @@ export async function readStreams(ids: bigint[]): Promise<Map<bigint, StreamStat
     client.multicall({
       contracts: ids.flatMap((id) => STREAM_FIELDS.map((functionName) => ({ address: FLOW, abi: flowAbi, functionName, args: [id] }) as const)),
       allowFailure: true,
+      batchSize: 32_768,
     }),
     client.readContract({ address: MULTICALL3, abi: clockAbi, functionName: "getCurrentBlockTimestamp" }).catch(() => BigInt(Math.floor(Date.now() / 1000))),
   ]);
@@ -233,6 +247,7 @@ export async function readStream(id: string): Promise<StreamState> {
   return stream;
 }
 
+/** Display labels for tokens (see tokenLabel): USDC/EURC by name, anything else with its address attached. */
 export async function tokenSymbols(addresses: Address[]): Promise<Map<Address, string>> {
   const unique = [...new Set(addresses.map((address) => getAddress(address)))];
   const unknown = unique.filter((address) => !symbolFor(address));
@@ -241,8 +256,8 @@ export async function tokenSymbols(addresses: Address[]): Promise<Map<Address, s
     : [];
   return new Map(unique.map((address) => {
     const index = unknown.indexOf(address);
-    const fetchedSymbol = index >= 0 && fetched[index]?.status === "success" ? (fetched[index].result as string) : undefined;
-    return [address, symbolFor(address) ?? fetchedSymbol ?? "TOKEN"];
+    const fetchedSymbol = index >= 0 && fetched[index]?.status === "success" ? (fetched[index].result as string) : null;
+    return [address, tokenLabel(address, fetchedSymbol)];
   }));
 }
 
@@ -271,7 +286,7 @@ export function describeStream(stream: StreamState, symbol: string, names = new 
     refundable_to_sender: display(stream.refundable, d),
     unpaid_debt: display(stream.uncoveredDebt, d),
     runs_out_at: runsOut ? iso(runsOut) : null,
-    runway: runsOut ? duration(runsOut - now) : live ? "out of funds" : "not streaming",
+    runway: runsOut ? duration(runsOut - now) : live || stream.status === "streaming_insolvent" ? "out of funds" : "not streaming",
     starts_at: stream.status === "pending" ? iso(stream.snapshotTime) : null,
     sablier_url: sablierUrl(stream.id),
   };
