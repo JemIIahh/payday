@@ -142,6 +142,19 @@ Notes from real use: PayBox proposals expire after about five minutes, so approv
 
 ## Verified on Base mainnet
 
+### Payday 0.2: a three-person payroll in one transaction (24 October 2026)
+
+Through Claude chat, PayBox and Payday 0.2, from the same PayBox wallet. Claude first checked affordability (`plan_stream` with `sender`), then started the payroll with one sentence.
+
+| Step | What happened | Transaction |
+|---|---|---|
+| Approve | Sablier allowed to pull exactly 1.60 USDC; the allowance left afterwards is 0 | [`0x078d9bd3…3faa68`](https://basescan.org/tx/0x078d9bd34dbeb7d3bb906f0f37a3579635a4356fdd4433abeb35a5d98b3faa68) |
+| Payroll | Streams 7, 8 and 9, at 0.5 USDC a week each, funded for 7 days, plus 0.10 USDC paid to the first payee up front, all in **one transaction** | [`0x6cf5b1d3…9beb04`](https://basescan.org/tx/0x6cf5b1d323ead54c61f2d7446dac9440c18cc398088a5d6caba2f4ba119beb04) |
+
+The streams run until 31 October and tick live on the [dashboard](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550). The [payer's](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550&statement=2026-10) and the [first payee's](https://jemiiahh.github.io/payday/?a=0xb3704310e72538342b0cb28ee41d62e77d64f7be&statement=2026-10) October payslips show the same transactions, including the 0.10 USDC paid up front.
+
+### Payday 0.1: start, end and refund (17 October 2026)
+
 One full run through Claude, PayBox and Payday 0.1 on 17 October 2026, from a PayBox wallet (`0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550`) holding 2 USDC. Every step needed the wallet owner's approval in PayBox.
 
 | Step | What happened | Transaction |
