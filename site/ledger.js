@@ -179,6 +179,14 @@ function buildMeters() {
   }
 }
 
+/** "Growing by 0.0012 USDC every second", or per minute/hour/day when a smaller unit would round to zero. */
+function growthText(rate, sym) {
+  const units = [["second", 1], ["minute", 60], ["hour", 3_600], ["day", 86_400]];
+  const [unit, seconds] = units.find(([, s]) => rate * s >= 0.001) ?? units[units.length - 1];
+  const value = rate * seconds;
+  return `Growing by ${fmt(value, value < 1 ? 4 : 2)} ${sym} every ${unit}`;
+}
+
 function updateMeters(t, snap = false) {
   for (const m of state.meters) {
     const solvent = m.list.filter((s) => flowing(s) && !dryAt(s, t));
@@ -186,7 +194,7 @@ function updateMeters(t, snap = false) {
     const dec = decimalsFor(rate);
     const value = m.list.reduce((a, s) => a + (m.kind === "in" ? withdrawableAt(s, t) : earnedAt(s, t)), 0);
     m.odo.set(value, dec, snap);
-    const note = rate > 0 ? `Growing by ${fmt(rate, 4)} ${m.sym} every second` : "Nothing is flowing right now";
+    const note = rate > 0 ? growthText(rate, m.sym) : "Nothing is flowing right now";
     if (m.last !== note) { m.last = note; m.note.textContent = note; }
     if (!m.labelAt || t - m.labelAt > 5) { m.labelAt = t; m.odo.label(m.odo.text(value, dec)); }
   }
