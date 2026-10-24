@@ -2,9 +2,14 @@
 // Pure functions over Sablier's indexed stream history: no network, no viem, so both bundles import it.
 //
 // A Flow stream's rate is piecewise constant. It is set on Create, changed by Adjust, zeroed by Pause and
-// Void, and set again by Restart. What accrues between two times is the sum of rate x seconds over the
-// pieces in between, in Sablier's 18-decimal fixed point, then descaled to the token's decimals.
-// Transfer moves the stream NFT, and with it the right to everything that accrues afterwards.
+// Void, and set again by Restart. Pay accrues as rate x seconds (18-decimal fixed point, then descaled to the
+// token's decimals). Void writes off whatever the stream could not cover.
+//
+// Accrued pay is only money once the stream holds the funds to back it. At any moment
+//   covered = min(accrued so far, deposits - refunds so far)
+// (withdrawals move covered pay out, they don't change how much was covered). A statement counts the covered
+// part as earned or paid, and reports the rest as unfunded, so a payslip never shows income nobody paid for.
+// Transfer moves the stream NFT, and with it the right to withdraw; pay covered while you held it counts as yours.
 
 export type IndexedAction = {
   category: string;
@@ -34,23 +39,27 @@ export type StreamLine = {
   token: string;
   token_address: string;
   decimals: number;
-  accrued: bigint;
-  written_off: bigint;
+  /** Accrued in the period and backed by funds: earned (income) or paid (spending). */
+  covered: bigint;
+  /** Accrued in the period but not (yet) backed by funds. */
+  unfunded: bigint;
   withdrawn: bigint;
   deposited: bigint;
   refunded: bigint;
   events: { category: string; amount: bigint | null; timestamp: number; hash: string }[];
 };
 
-export type Totals = { accrued: bigint; withdrawn: bigint; deposited: bigint; refunded: bigint; written_off: bigint; decimals: number };
+export type Totals = { covered: bigint; unfunded: bigint; withdrawn: bigint; deposited: bigint; refunded: bigint; decimals: number };
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const lower = (value: string | null | undefined) => (value ?? "").toLowerCase();
 const big = (value: string | null | undefined) => (value ? BigInt(value) : 0n);
+const byTime = (actions: IndexedAction[]) => [...actions].sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+const isTransfer = (action: IndexedAction) => action.category === "Transfer" && lower(action.addressA) !== ZERO_ADDRESS && Boolean(action.addressB);
 
 /** Rate and holder over time, from the stream's start to now (open-ended last piece). */
 export function segments(stream: IndexedStream): Segment[] {
-  const actions = [...stream.actions].sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+  const actions = byTime(stream.actions);
   const create = actions.find((action) => action.category === "Create");
   const start = Number(stream.startTime);
   let rate = big(create?.amountA);
@@ -68,9 +77,7 @@ export function segments(stream: IndexedStream): Segment[] {
       case "Adjust": cut(at); rate = big(action.amountB); break;
       case "Pause": case "Void": cut(at); rate = 0n; break;
       case "Restart": cut(at); rate = big(action.amountA); break;
-      case "Transfer":
-        if (lower(action.addressA) === ZERO_ADDRESS || !action.addressB) break;
-        cut(at); holder = lower(action.addressB); break;
+      case "Transfer": if (isTransfer(action)) { cut(at); holder = lower(action.addressB); } break;
     }
   }
   out.push({ from: since, to: null, rate, holder });
@@ -80,9 +87,9 @@ export function segments(stream: IndexedStream): Segment[] {
 /** Who held the stream NFT (and so its pay) at time `at`. */
 export function holderAt(stream: IndexedStream, at: number): string {
   let holder = lower(stream.actions.find((action) => action.category === "Create")?.addressB ?? stream.recipient);
-  for (const action of [...stream.actions].sort((a, b) => Number(a.timestamp) - Number(b.timestamp))) {
+  for (const action of byTime(stream.actions)) {
     if (Number(action.timestamp) > at) break;
-    if (action.category === "Transfer" && lower(action.addressA) !== ZERO_ADDRESS && action.addressB) holder = lower(action.addressB);
+    if (isTransfer(action)) holder = lower(action.addressB);
   }
   return holder;
 }
@@ -103,6 +110,38 @@ export function descaled(scaled: bigint, decimals: number): bigint {
   return scaled / 10n ** BigInt(18 - decimals);
 }
 
+/** Cumulative accrued (net of write-offs) and covered pay of a stream at time `t`, in token units. */
+export function position(stream: IndexedStream, t: number, pieces = segments(stream)) {
+  const decimals = Number(stream.asset.decimals);
+  let funded = 0n;
+  let writtenOff = 0n;
+  for (const action of stream.actions) {
+    if (Number(action.timestamp) > t) continue;
+    if (action.category === "Deposit") funded += big(action.amountA);
+    else if (action.category === "Refund") funded -= big(action.amountA);
+    else if (action.category === "Void") writtenOff += big(action.amountB);
+  }
+  let accrued = descaled(accruedScaled(pieces, 0, t), decimals) - writtenOff;
+  if (accrued < 0n) accrued = 0n;
+  const covered = funded < accrued ? (funded > 0n ? funded : 0n) : accrued;
+  return { accrued, covered };
+}
+
+/** The [from, to) stretches of a period during which `holder` held the stream. */
+function heldIntervals(pieces: Segment[], holder: string, from: number, to: number): [number, number][] {
+  const out: [number, number][] = [];
+  for (const piece of pieces) {
+    if (piece.holder !== holder) continue;
+    const a = Math.max(piece.from, from);
+    const b = Math.min(piece.to ?? to, to);
+    if (b <= a) continue;
+    const last = out[out.length - 1];
+    if (last && last[1] === a) last[1] = b;
+    else out.push([a, b]);
+  }
+  return out;
+}
+
 /**
  * One stream's lines for `address` over [from, to): an income line if the address held the stream at any
  * point, a spending line if it is the sender. A self-stream yields both.
@@ -113,41 +152,41 @@ export function streamLines(stream: IndexedStream, address: string, from: number
   const pieces = segments(stream);
   const inPeriod = (action: IndexedAction) => Number(action.timestamp) >= from && Number(action.timestamp) < to;
   const base = { stream_id: stream.tokenId, token: stream.asset.symbol, token_address: lower(stream.asset.address), decimals };
-  const lines: StreamLine[] = [];
+  const at = (t: number) => position(stream, t, pieces);
+  const sum = (actions: IndexedAction[], category: string) => actions.filter((a) => a.category === category).reduce((total, a) => total + big(a.amountA), 0n);
   const event = (action: IndexedAction) => ({
     category: action.category,
     amount: ["Deposit", "Withdraw", "Refund"].includes(action.category) ? big(action.amountA) : null,
     timestamp: Number(action.timestamp),
     hash: action.hash,
   });
+  const lines: StreamLine[] = [];
 
-  const held = pieces.some((piece) => piece.holder === me);
-  if (held) {
-    const mine = (action: IndexedAction) => holderAt(stream, Number(action.timestamp)) === me;
-    const actions = stream.actions.filter((action) => inPeriod(action) && mine(action));
+  if (pieces.some((piece) => piece.holder === me)) {
+    let covered = 0n;
+    let accrued = 0n;
+    for (const [a, b] of heldIntervals(pieces, me, from, to)) {
+      const start = at(a), end = at(b);
+      covered += end.covered - start.covered;
+      accrued += end.accrued - start.accrued;
+    }
+    const actions = stream.actions.filter((action) => inPeriod(action) && holderAt(stream, Number(action.timestamp)) === me);
     lines.push({
-      ...base,
-      side: "income",
-      counterparty: lower(stream.sender),
-      accrued: descaled(accruedScaled(pieces, from, to, me), decimals),
-      written_off: actions.filter((a) => a.category === "Void").reduce((sum, a) => sum + big(a.amountB), 0n),
-      withdrawn: actions.filter((a) => a.category === "Withdraw").reduce((sum, a) => sum + big(a.amountA), 0n),
-      deposited: 0n,
-      refunded: 0n,
+      ...base, side: "income", counterparty: lower(stream.sender),
+      covered, unfunded: accrued > covered ? accrued - covered : 0n,
+      withdrawn: sum(actions, "Withdraw"), deposited: 0n, refunded: 0n,
       events: actions.map(event),
     });
   }
   if (lower(stream.sender) === me) {
+    const start = at(from), end = at(to);
+    const covered = end.covered - start.covered;
+    const accrued = end.accrued - start.accrued;
     const actions = stream.actions.filter(inPeriod);
     lines.push({
-      ...base,
-      side: "spending",
-      counterparty: holderAt(stream, to),
-      accrued: descaled(accruedScaled(pieces, from, to), decimals),
-      written_off: actions.filter((a) => a.category === "Void").reduce((sum, a) => sum + big(a.amountB), 0n),
-      withdrawn: actions.filter((a) => a.category === "Withdraw").reduce((sum, a) => sum + big(a.amountA), 0n),
-      deposited: actions.filter((a) => a.category === "Deposit").reduce((sum, a) => sum + big(a.amountA), 0n),
-      refunded: actions.filter((a) => a.category === "Refund").reduce((sum, a) => sum + big(a.amountA), 0n),
+      ...base, side: "spending", counterparty: holderAt(stream, to),
+      covered, unfunded: accrued > covered ? accrued - covered : 0n,
+      withdrawn: sum(actions, "Withdraw"), deposited: sum(actions, "Deposit"), refunded: sum(actions, "Refund"),
       events: actions.map(event),
     });
   }
@@ -158,12 +197,12 @@ export function streamLines(stream: IndexedStream, address: string, from: number
 export function totals(lines: StreamLine[]): Record<string, Totals> {
   const out: Record<string, Totals> = {};
   for (const line of lines) {
-    const row = out[line.token] ??= { accrued: 0n, withdrawn: 0n, deposited: 0n, refunded: 0n, written_off: 0n, decimals: line.decimals };
-    row.accrued += line.accrued - line.written_off;
+    const row = out[line.token] ??= { covered: 0n, unfunded: 0n, withdrawn: 0n, deposited: 0n, refunded: 0n, decimals: line.decimals };
+    row.covered += line.covered;
+    row.unfunded += line.unfunded;
     row.withdrawn += line.withdrawn;
     row.deposited += line.deposited;
     row.refunded += line.refunded;
-    row.written_off += line.written_off;
   }
   return out;
 }

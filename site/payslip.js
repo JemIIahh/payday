@@ -16,11 +16,11 @@ function shiftMonth(month, delta) {
 
 const VERB = { Create: "Stream started", Deposit: "Funded", Withdraw: "Withdrawn", Adjust: "Pay changed", Pause: "Paused", Restart: "Resumed", Refund: "Refunded", Void: "Ended", Transfer: "Handed over" };
 
-const NUMERIC = new Set(["Earned", "Withdrawn", "Paid", "Deposited", "Refunded", "Amount"]);
+const NUMERIC = new Set(["Earned", "Withdrawn", "Paid", "Deposited", "Refunded", "Amount", "Not funded"]);
 
 function table(head, rows, className) {
   return h("div", { class: "table-wrap" }, h("table", { class: className },
-    h("thead", {}, h("tr", {}, head.map((cell) => h("th", { scope: "col", class: NUMERIC.has(cell) ? "num" : null, text: cell })))),
+    h("thead", {}, h("tr", {}, head.filter(Boolean).map((cell) => h("th", { scope: "col", class: NUMERIC.has(cell) ? "num" : null, text: cell })))),
     h("tbody", {}, rows)));
 }
 
@@ -54,7 +54,7 @@ export async function showPayslip(owner, ownerName, month) {
   const yearStart = Date.UTC(Number(month.slice(0, 4)), 0, 1) / 1000;
   const lines = history.flatMap((s) => streamLines(s, owner, bounds.from, to));
   const ytd = history.flatMap((s) => streamLines(s, owner, yearStart, to));
-  const active = (line) => line.accrued > 0n || line.events.length > 0;
+  const active = (line) => line.covered > 0n || line.unfunded > 0n || line.events.length > 0;
   const income = lines.filter((l) => l.side === "income" && active(l));
   const spending = lines.filter((l) => l.side === "spending" && active(l));
   const found = await namesFor([owner, ...lines.map((l) => l.counterparty)]);
@@ -68,8 +68,8 @@ export async function showPayslip(owner, ownerName, month) {
   const ytdSpend = totals(ytd.filter((l) => l.side === "spending"));
   const headlineSide = income.length || !spending.length ? "income" : "spending";
   const headTotals = headlineSide === "income" ? incomeTotals : spendTotals;
-  const [headSym, head] = Object.entries(headTotals).sort((a, b) => units(b[1].accrued, b[1].decimals) - units(a[1].accrued, a[1].decimals))[0] ?? ["USDC", { accrued: 0n, decimals: 6, withdrawn: 0n, deposited: 0n, refunded: 0n }];
-  const headValue = units(head.accrued, head.decimals);
+  const [headSym, head] = Object.entries(headTotals).sort((a, b) => units(b[1].covered, b[1].decimals) - units(a[1].covered, a[1].decimals))[0] ?? ["USDC", { covered: 0n, unfunded: 0n, decimals: 6, withdrawn: 0n, deposited: 0n, refunded: 0n }];
+  const headValue = units(head.covered, head.decimals);
   const odo = new Odometer("tiles", headSym);
   odo.set(headValue, headValue > 0 && headValue < 1 ? 6 : 2, true);
   odo.label(`${money(headValue)}`);
@@ -77,20 +77,34 @@ export async function showPayslip(owner, ownerName, month) {
   const stat = (text, value) => h("div", { class: "stat" }, h("p", { class: "stat-label", text }), h("p", { class: "stat-value", text: value }));
   const sumText = (record, key) => Object.entries(record).map(([sym, row]) => `${money(units(row[key], row.decimals))} ${sym}`).join(" + ") || "0.00";
   const toDate = bounds.to > now;
+  const amountCell = (value, l) => h("td", { class: "num", text: `${money(units(value, l.decimals))} ${l.token}` });
+  const streamCell = (l) => h("td", {}, h("a", { href: `https://app.sablier.com/payments/stream/FL4-8453-${l.stream_id}`, target: "_blank", rel: "noopener", text: `#${l.stream_id}` }));
+  const incomeGap = income.some((l) => l.unfunded > 0n);
+  const spendGap = spending.some((l) => l.unfunded > 0n);
 
   const incomeRows = income.map((l) => h("tr", {},
-    h("td", {}, h("a", { href: `https://app.sablier.com/payments/stream/FL4-8453-${l.stream_id}`, target: "_blank", rel: "noopener", text: `#${l.stream_id}` })),
+    streamCell(l),
     h("td", { title: getAddress(l.counterparty), text: who(l.counterparty) }),
-    h("td", { class: "num", text: `${money(units(l.accrued - l.written_off, l.decimals))} ${l.token}` }),
-    h("td", { class: "num", text: `${money(units(l.withdrawn, l.decimals))} ${l.token}` }),
+    amountCell(l.covered, l),
+    amountCell(l.withdrawn, l),
+    incomeGap ? amountCell(l.unfunded, l) : null,
   ));
   const spendRows = spending.map((l) => h("tr", {},
-    h("td", {}, h("a", { href: `https://app.sablier.com/payments/stream/FL4-8453-${l.stream_id}`, target: "_blank", rel: "noopener", text: `#${l.stream_id}` })),
+    streamCell(l),
     h("td", { title: getAddress(l.counterparty), text: who(l.counterparty) }),
-    h("td", { class: "num", text: `${money(units(l.accrued - l.written_off, l.decimals))} ${l.token}` }),
-    h("td", { class: "num", text: `${money(units(l.deposited, l.decimals))} ${l.token}` }),
-    h("td", { class: "num", text: `${money(units(l.refunded, l.decimals))} ${l.token}` }),
+    amountCell(l.covered, l),
+    amountCell(l.deposited, l),
+    amountCell(l.refunded, l),
+    spendGap ? amountCell(l.unfunded, l) : null,
   ));
+  const gapNote = (lines, side) => {
+    const gap = totals(lines.filter((l) => l.side === side));
+    const text = Object.entries(gap).filter(([, row]) => row.unfunded > 0n).map(([sym, row]) => `${money(units(row.unfunded, row.decimals))} ${sym}`).join(" + ");
+    if (!text) return null;
+    return h("p", { class: "sheet-gap", text: side === "income"
+      ? `A further ${text} accrued without funds behind it, because a stream ran dry. It isn't counted as earned until the payer tops the stream up.`
+      : `A further ${text} accrued that the streams couldn't cover. Top them up to pay it.` });
+  };
   const seen = new Set();
   const events = lines.flatMap((l) => l.events.map((e) => ({ l, e })))
     .filter(({ l, e }) => { const k = `${e.hash}${l.stream_id}${e.category}`; if (seen.has(k)) return false; seen.add(k); return true; })
@@ -120,21 +134,23 @@ export async function showPayslip(owner, ownerName, month) {
       odo.root,
       h("div", { class: "stats" },
         headlineSide === "income"
-          ? [stat("Withdrawn this month", sumText(incomeTotals, "withdrawn")), stat(`Earned in ${month.slice(0, 4)} so far`, sumText(ytdIncome, "accrued"))]
-          : [stat("Deposited this month", sumText(spendTotals, "deposited")), stat("Refunded this month", sumText(spendTotals, "refunded")), stat(`Paid out in ${month.slice(0, 4)} so far`, sumText(ytdSpend, "accrued"))],
-        headlineSide === "income" && spending.length ? stat("Paid out this month", sumText(spendTotals, "accrued")) : null)),
+          ? [stat("Withdrawn this month", sumText(incomeTotals, "withdrawn")), stat(`Earned in ${month.slice(0, 4)} so far`, sumText(ytdIncome, "covered"))]
+          : [stat("Deposited this month", sumText(spendTotals, "deposited")), stat("Refunded this month", sumText(spendTotals, "refunded")), stat(`Paid out in ${month.slice(0, 4)} so far`, sumText(ytdSpend, "covered"))],
+        headlineSide === "income" && spending.length ? stat("Paid out this month", sumText(spendTotals, "covered")) : null),
+      gapNote(lines, headlineSide)),
     income.length ? h("section", { class: "sheet-section" },
       h("h3", { text: "Income" }),
-      table(["Stream", "From", "Earned", "Withdrawn"], incomeRows, "slip-table")) : null,
+      table(["Stream", "From", "Earned", "Withdrawn", incomeGap ? "Not funded" : null], incomeRows, "slip-table")) : null,
     spending.length ? h("section", { class: "sheet-section" },
       h("h3", { text: "Pay sent" }),
-      table(["Stream", "To", "Paid", "Deposited", "Refunded"], spendRows, "slip-table")) : null,
+      table(["Stream", "To", "Paid", "Deposited", "Refunded", spendGap ? "Not funded" : null], spendRows, "slip-table"),
+      headlineSide === "income" ? gapNote(lines, "spending") : null) : null,
     !income.length && !spending.length ? h("p", { class: "sheet-empty", text: `No Payday streams paid or were paid by this address in ${monthName(month)}.` }) : null,
     events.length ? h("section", { class: "sheet-section" },
       h("h3", { text: "Transactions" }),
       table(["When", "Stream", "What", "Amount", "Transaction"], eventRows, "slip-table tx-table")) : null,
     h("footer", { class: "sheet-foot" },
-      h("p", { text: `Every figure comes from Sablier Flow v3 on Base (${FLOW}). Earned pay is each stream's per-second rate multiplied by the seconds it ran in this period; deposits, withdrawals and refunds are the transactions listed, each linked to Basescan. History is read from Sablier's public indexer.` }),
+      h("p", { text: `Every figure comes from Sablier Flow v3 on Base (${FLOW}). Pay accrues at each stream's per-second rate; it counts as earned (or paid) once the stream holds the funds to back it. Deposits, withdrawals and refunds are the transactions listed, each linked to Basescan. History is read from Sablier's public indexer.` }),
       h("p", { text: `Generated ${timeText(now)}. Months are calendar months in UTC.` })),
   );
 }

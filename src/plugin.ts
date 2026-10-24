@@ -703,7 +703,7 @@ function createServer() {
 
   server.registerTool("payment_statement", {
     title: "Pay statement and payslip",
-    description: "A monthly statement for an address (0x or Base name) from its Sablier Flow streams on Base: income earned and withdrawn, and pay sent, deposited and refunded, per stream and per token, with year-to-date totals, the transaction behind every movement, and a printable payslip link. Uses Sablier's public indexer for history. Read-only.",
+    description: "A monthly statement for an address (0x or Base name) from its Sablier Flow streams on Base: income earned and withdrawn, and pay sent, deposited and refunded, per stream and per token, with year-to-date totals, the transaction behind every movement, and a printable payslip link. Earned and paid count only pay the stream had funds for; pay that accrued without funds is listed separately as unfunded. Uses Sablier's public indexer for history. Read-only.",
     inputSchema: z.object({
       address: partySchema,
       month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM, e.g. 2026-10.").optional().describe("Calendar month in UTC, e.g. 2026-10. Defaults to the current month."),
@@ -738,16 +738,16 @@ function createServer() {
     }
     const lines = history.flatMap((stream) => streamLines(stream, owner, bounds.from, to));
     const ytd = history.flatMap((stream) => streamLines(stream, owner, yearStart, to));
-    const active = (line: StreamLine) => line.accrued > 0n || line.events.length > 0;
+    const active = (line: StreamLine) => line.covered > 0n || line.unfunded > 0n || line.events.length > 0;
     const counterparties = lines.map((line) => getAddress(line.counterparty));
     const names = await namesFor([owner, ...counterparties]);
     if (party.name) names.set(owner, party.name);
     const amount = (value: bigint, decimals: number) => display(value, decimals);
     const side = (kind: "income" | "spending") => {
       const pick = (list: StreamLine[]) => list.filter((line) => line.side === kind);
-      const fields = (row: { accrued: bigint; withdrawn: bigint; deposited: bigint; refunded: bigint; written_off?: bigint; decimals: number }): Record<string, string> => kind === "income"
-        ? { earned: amount(row.accrued, row.decimals), withdrawn: amount(row.withdrawn, row.decimals) }
-        : { paid: amount(row.accrued, row.decimals), deposited: amount(row.deposited, row.decimals), refunded: amount(row.refunded, row.decimals) };
+      const fields = (row: { covered: bigint; unfunded: bigint; withdrawn: bigint; deposited: bigint; refunded: bigint; decimals: number }): Record<string, string> => kind === "income"
+        ? { earned: amount(row.covered, row.decimals), withdrawn: amount(row.withdrawn, row.decimals), unfunded: amount(row.unfunded, row.decimals) }
+        : { paid: amount(row.covered, row.decimals), deposited: amount(row.deposited, row.decimals), refunded: amount(row.refunded, row.decimals), unfunded: amount(row.unfunded, row.decimals) };
       return {
         totals: Object.fromEntries(Object.entries(totals(pick(lines))).map(([symbol, row]) => [symbol, fields(row)])),
         year_to_date: Object.fromEntries(Object.entries(totals(pick(ytd))).map(([symbol, row]) => [symbol, fields(row)])),
@@ -756,7 +756,7 @@ function createServer() {
           counterparty: getAddress(line.counterparty),
           counterparty_name: names.get(getAddress(line.counterparty)) ?? null,
           token: line.token,
-          amounts: fields({ ...line, accrued: line.accrued - line.written_off }),
+          amounts: fields(line),
           sablier_url: sablierUrl(BigInt(line.stream_id)),
         })),
       };
@@ -779,11 +779,14 @@ function createServer() {
       }));
     const label = names.get(owner) ?? owner;
     const list = (record: Record<string, Record<string, string>>, key: string) => Object.entries(record).map(([symbol, row]) => `${row[key]} ${symbol}`).join(", ");
+    const unfunded = (record: Record<string, Record<string, string>>) => Object.entries(record).filter(([, row]) => row.unfunded !== "0").map(([symbol, row]) => `${row.unfunded} ${symbol}`).join(", ");
     const payslip = `${SITE}?a=${owner}&statement=${month}`;
+    const owedIn = unfunded(income.totals);
+    const owedOut = unfunded(spending.totals);
     const text = [
       `${month} statement for ${label} (${iso(bounds.from).slice(0, 10)} to ${iso(to).slice(0, 10)}).`,
-      income.streams.length ? `Income: earned ${list(income.totals, "earned")} across ${income.streams.length} stream(s); withdrew ${list(income.totals, "withdrawn")}. Year to date: earned ${list(income.year_to_date, "earned")}.` : "No stream income this month.",
-      spending.streams.length ? `Paid out: ${list(spending.totals, "paid")} across ${spending.streams.length} stream(s); deposited ${list(spending.totals, "deposited")}, refunded ${list(spending.totals, "refunded")}.` : "",
+      income.streams.length ? `Income: earned ${list(income.totals, "earned")} across ${income.streams.length} stream(s); withdrew ${list(income.totals, "withdrawn")}. Year to date: earned ${list(income.year_to_date, "earned")}.${owedIn ? ` A further ${owedIn} accrued without funds behind it and is not counted as earned.` : ""}` : "No stream income this month.",
+      spending.streams.length ? `Paid out: ${list(spending.totals, "paid")} across ${spending.streams.length} stream(s); deposited ${list(spending.totals, "deposited")}, refunded ${list(spending.totals, "refunded")}.${owedOut ? ` ${owedOut} more accrued that the streams could not cover; top them up to pay it.` : ""}` : "",
       `Printable payslip: ${payslip}`,
     ].filter(Boolean).join("\n");
     return data(text, {

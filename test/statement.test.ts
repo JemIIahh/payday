@@ -29,13 +29,14 @@ describe("statement math", () => {
   it("reproduces the mainnet run to the token unit", () => {
     const [spending] = streamLines(stream5, PAYER, october.from, october.to);
     assert.equal(spending?.side, "spending");
-    assert.equal(spending?.accrued, 81_666n); // 294 s x 1/3600 USDC, the 0.081666 the recipient earned
+    assert.equal(spending?.covered, 81_666n); // 294 s x 1/3600 USDC, the 0.081666 the recipient earned
+    assert.equal(spending?.unfunded, 0n);
     assert.equal(spending?.deposited, 1_000_000n);
     assert.equal(spending?.refunded, 918_334n);
-    assert.equal(spending!.accrued + spending!.refunded, spending!.deposited);
+    assert.equal(spending!.covered + spending!.refunded, spending!.deposited);
     const [income] = streamLines(stream5, PAYEE, october.from, october.to);
     assert.equal(income?.side, "income");
-    assert.equal(income?.accrued, 81_666n);
+    assert.equal(income?.covered, 81_666n);
     assert.equal(income?.withdrawn, 0n);
   });
 
@@ -43,9 +44,29 @@ describe("statement math", () => {
     const mid = 1792265671 + 100;
     const [before] = streamLines(stream5, PAYEE, october.from, mid);
     const [after] = streamLines(stream5, PAYEE, mid, october.to);
-    // Each part is floored to token units on its own, so split periods can sum to one unit less than the whole.
-    assert.ok(81_666n - (before!.accrued + after!.accrued) <= 1n);
-    assert.equal(streamLines(stream5, PAYEE, monthBounds("2026-11").from, monthBounds("2026-11").to)[0]?.accrued, 0n);
+    assert.equal(before!.covered + after!.covered, 81_666n); // cumulative positions, so the parts add up exactly
+    assert.equal(streamLines(stream5, PAYEE, monthBounds("2026-11").from, monthBounds("2026-11").to)[0]?.covered, 0n);
+  });
+
+  it("never counts pay a dry stream could not cover as earned", () => {
+    // Stream 6 on mainnet: 1 USDC an hour, funded with 1 USDC, 0.052222 withdrawn, then left to run dry.
+    const t = 1792709275;
+    const stream6: IndexedStream = {
+      tokenId: "6", sender: OTHER, recipient: PAYEE, startTime: String(t), asset: USDC,
+      actions: [
+        action("Create", t, { amountA: "277777777777778", addressA: OTHER, addressB: PAYEE }),
+        action("Deposit", t, { amountA: "1000000" }),
+        action("Withdraw", t + 188, { amountA: "52222", addressA: OTHER, addressB: PAYEE }),
+      ],
+    };
+    const end = t + 100 * 3_600; // a hundred hours later
+    const [income] = streamLines(stream6, PAYEE, october.from, end);
+    assert.equal(income?.covered, 1_000_000n); // only the 1 USDC that was ever deposited
+    assert.equal(income?.covered + income!.unfunded, 100_000_000n); // 100 hours accrued at 1 USDC an hour (rounding up the rate)
+    assert.equal(income?.withdrawn, 52_222n);
+    const [spending] = streamLines(stream6, OTHER, october.from, end);
+    assert.equal(spending?.covered, 1_000_000n);
+    assert.equal(spending?.unfunded, income?.unfunded);
   });
 
   it("follows rate changes, pauses and restarts", () => {
@@ -81,18 +102,19 @@ describe("statement math", () => {
       tokenId: "11", sender: PAYER, recipient: OTHER, startTime: String(t), asset: USDC,
       actions: [
         action("Create", t, { amountA: (10n ** 18n).toString(), addressA: PAYER, addressB: PAYEE }),
+        action("Deposit", t, { amountA: "500000000" }),
         action("Withdraw", t + 30, { amountA: "30000000", addressA: PAYEE, addressB: PAYEE }),
         action("Transfer", t + 40, { addressA: PAYEE, addressB: OTHER }),
       ],
     };
     const [first] = streamLines(stream, PAYEE, t, t + 100);
     const [second] = streamLines(stream, OTHER, t, t + 100);
-    assert.equal(first?.accrued, 40_000_000n);
+    assert.equal(first?.covered, 40_000_000n);
     assert.equal(first?.withdrawn, 30_000_000n);
-    assert.equal(second?.accrued, 60_000_000n);
+    assert.equal(second?.covered, 60_000_000n);
     assert.equal(second?.withdrawn, 0n);
     const [spending] = streamLines(stream, PAYER, t, t + 100);
-    assert.equal(spending?.accrued, 100_000_000n);
+    assert.equal(spending?.covered, 100_000_000n);
     assert.equal(spending?.counterparty, OTHER);
   });
 
@@ -107,9 +129,9 @@ describe("statement math", () => {
       ],
     };
     const lines = streamLines(stream, PAYEE, t, t + 100);
-    assert.equal(lines[0]?.accrued, 8_000_000n);
-    assert.equal(lines[0]?.written_off, 3_000_000n);
-    assert.equal(totals(lines).USDC?.accrued, 5_000_000n);
+    assert.equal(lines[0]?.covered, 5_000_000n); // 8 accrued, 3 written off, 5 funded
+    assert.equal(lines[0]?.unfunded, 0n);
+    assert.equal(totals(lines).USDC?.covered, 5_000_000n);
   });
 
   it("handles a self-stream as both income and spending", () => {
