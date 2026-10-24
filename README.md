@@ -64,7 +64,7 @@ An illustration of the conversation. The wording follows the tools' real output;
 | | `withdraw_all` | Collects everything earned across every stream that pays an address, in **one transaction**. |
 | See | `stream_status` | Live state of up to 25 streams: rate, balance, withdrawable now, refundable, unpaid debt, run-out time, Base names. |
 | | `list_streams` | Payroll and income overview for an address, with streams that need attention, pay waiting to be withdrawn, and ready-to-call next steps. |
-| | `payment_statement` | A monthly statement (income and pay sent, year to date, every transaction) and a printable payslip link. Read-only. |
+| | `payment_statement` | A monthly statement (income and pay sent, year to date, every transaction) and a printable payslip link. Pay counts as earned only once a stream held the funds to back it; anything accrued beyond that is listed as unfunded. Read-only. |
 
 Tokens: USDC (default), EURC, or any ERC-20 on Base with at most 18 decimals.
 
@@ -100,8 +100,11 @@ PayBox takes one transaction per proposal. A new stream therefore needs two appr
   - someone other than the sender tries to manage a stream;
   - the recipient is a token contract or Sablier itself;
   - a name isn't registered;
-  - an amount rounds to zero.
-- **Names you can trust.** A Base name is resolved on chain and shown next to the full address. Reverse names are only displayed after checking that they resolve back to the same address. The pay-me page re-checks the name against the address in the link.
+  - an amount rounds to zero or has more decimal places than the token.
+- **Every payee in full.** Payroll summaries show each person's full address next to any label, because a label is only what the agent typed.
+- **Names you can trust.** A Base name is resolved on chain and shown next to the full address. Reverse names are only displayed after checking that they resolve back to the same address.
+- **Pay-me links can't put words in your agent's mouth.** The page checks the name in the link against its address and blocks copying on a mismatch. The requester's note is shown on the page but never enters the sentence you give your agent.
+- **Tokens by address.** USDC and EURC are recognised by contract address. Any other token is shown with its address, so a token calling itself "USDC" can't pass for it.
 - **Never underpays.** Per-second rates are rounded up, so 3,000/month really pays 3,000 every 30 days. The extra is under a millionth of a token.
 - **Stateless.** All state lives on chain, which suits PayBox's fresh-sandbox-per-call runtime. History comes from Sablier's public indexer; balances are always read live from Base.
 
@@ -181,6 +184,7 @@ Upload `dist/plugin.mjs` in the developer portal.
 
 `scripts/e2e.mjs` calls every tool through the built bundle, using the same stdio protocol PayBox uses. It sends each returned proposal as a real transaction from an impersonated USDC holder on a local fork of Base mainnet, then checks the outcome on chain:
 
+- cancelling a stream before it starts;
 - accrual after an hour;
 - payroll with an upfront payment;
 - paying a real Base name;

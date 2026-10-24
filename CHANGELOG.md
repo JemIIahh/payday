@@ -18,6 +18,10 @@ PayBox invited finalists to keep improving their plugins before the top three ar
 
 **Proof of income.** `payment_statement` produces a monthly statement of what an address earned, withdrew, paid, deposited and was refunded, with year-to-date totals and the transaction behind every figure. Its link opens a printable payslip on the dashboard. The plugin and the dashboard share one statement module (`src/statement.ts`), so they always agree.
 
+A stream that runs dry keeps building up pay it can't cover. Statements count pay as earned only once the stream held the funds to back it, and list the rest separately as unfunded, so a payslip never overstates income.
+
+**Trust nothing a token says about itself.** USDC and EURC are recognised by address. Any other token is shown with its address next to its symbol, so a token that calls itself "USDC" can't pass for USDC in totals, summaries or payslips.
+
 **Get paid.** `request_payment` makes a pay-me link. It opens a page with the request, a live preview, a QR code, a check that the name and address match, and the exact sentence the payer's agent needs.
 
 **Checks before you approve.** Proposals now carry plain-language warnings:
@@ -43,7 +47,14 @@ Payday refuses to pay a token contract or the Sablier contract itself.
 - A pay calculator that shows a paycheck arriving in lumps against a stream that ramps.
 
 **Tests and CI:**
-- 13 unit tests for the statement and amount math.
+- 18 unit tests for the statement, token-label and amount math, including regressions built from real mainnet streams.
+- An independent code review; every finding was fixed and covered by a test. Fixes include:
+  - ending a stream before it starts;
+  - refunding leftovers in an ended stream;
+  - token labels by address;
+  - names and notes in pay-me links that can't reach the agent's sentence;
+  - full payee addresses in payroll summaries;
+  - clear errors for too many decimal places.
 - The Base-fork end-to-end suite now runs every one of the 17 tools and checks the outcome on chain.
 - GitHub Actions runs everything on each push.
 
