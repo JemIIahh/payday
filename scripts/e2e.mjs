@@ -62,7 +62,10 @@ async function execute(result, from = SENDER) {
   const proposal = result.structuredContent?.[KEY];
   if (!proposal) throw new Error(`no proposal: ${result.content?.[0]?.text}`);
   const { to, value, data } = proposal.transaction;
-  const hash = await wallet.sendTransaction({ account: from, to, value: BigInt(value), data });
+  // Gas headroom, as a wallet adds: estimated in the same second as the stream's last change, Sablier skips
+  // snapshot writes it then makes once the transaction lands a second later, so a bare estimate can run short.
+  const estimate = await pub.estimateGas({ account: from, to, value: BigInt(value), data });
+  const hash = await wallet.sendTransaction({ account: from, to, value: BigInt(value), data, gas: (estimate * 3n) / 2n + 50_000n });
   const receipt = await pub.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") {
     // Replay it on the block before to surface Sablier's revert reason in the log.
