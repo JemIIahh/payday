@@ -43,13 +43,47 @@ export type StreamLine = {
   covered: bigint;
   /** Accrued in the period but not (yet) backed by funds. */
   unfunded: bigint;
+  /** One-off amount paid straight to the recipient when the stream was created (pay_now), if in the period. */
+  upfront: bigint;
   withdrawn: bigint;
   deposited: bigint;
   refunded: bigint;
   events: { category: string; amount: bigint | null; timestamp: number; hash: string }[];
 };
 
-export type Totals = { covered: bigint; unfunded: bigint; withdrawn: bigint; deposited: bigint; refunded: bigint; decimals: number };
+export type Totals = { covered: bigint; unfunded: bigint; upfront: bigint; withdrawn: bigint; deposited: bigint; refunded: bigint; decimals: number };
+
+/** A pay_now payment: a plain token transfer made in the same transaction that created the stream. */
+export type Upfront = { amount: bigint; timestamp: number; hash: string };
+export type Log = { address: string; topics: readonly string[]; data: string };
+
+const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+const topicAddress = (topic: string | undefined) => `0x${(topic ?? "").slice(-40)}`.toLowerCase();
+
+/**
+ * Sablier's indexer only sees stream actions, so a one-off payment made alongside a stream (Payday's pay_now,
+ * sent with Flow's transferTokens in the same batch) is read from the creation transaction's own logs: an
+ * ERC-20 transfer of the stream's token straight from the sender to the recipient. Deposits go to the Flow
+ * contract and the stream NFT carries no amount, so neither can be mistaken for it.
+ */
+export function upfrontFromLogs(stream: IndexedStream, logs: Log[]): Upfront | null {
+  const create = stream.actions.find((action) => action.category === "Create");
+  if (!create) return null;
+  const token = lower(stream.asset.address);
+  const sender = lower(stream.sender);
+  const recipient = lower(create.addressB ?? stream.recipient);
+  let amount = 0n;
+  for (const log of logs) {
+    if (lower(log.address) !== token || log.topics[0] !== TRANSFER || log.data === "0x" || log.topics.length !== 3) continue;
+    if (topicAddress(log.topics[1]) === sender && topicAddress(log.topics[2]) === recipient) amount += BigInt(log.data);
+  }
+  return amount > 0n ? { amount, timestamp: Number(create.timestamp), hash: create.hash } : null;
+}
+
+/** The creation transaction of each stream, for fetching receipts to pass to upfrontFromLogs. */
+export function creationHashes(streams: IndexedStream[]): string[] {
+  return [...new Set(streams.flatMap((stream) => stream.actions.filter((action) => action.category === "Create").map((action) => action.hash)))];
+}
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
@@ -164,8 +198,10 @@ function heldIntervals(pieces: Segment[], holder: string, from: number, to: numb
  * One stream's lines for `address` over [from, to): an income line if the address held the stream at any
  * point, a spending line if it is the sender. A self-stream yields both.
  */
-export function streamLines(stream: IndexedStream, address: string, from: number, to: number): StreamLine[] {
+export function streamLines(stream: IndexedStream, address: string, from: number, to: number, upfront: Upfront | null = null): StreamLine[] {
   const me = lower(address);
+  const paidNow = upfront && upfront.timestamp >= from && upfront.timestamp < to ? upfront : null;
+  const upfrontEvent = paidNow ? [{ category: "Upfront", amount: paidNow.amount, timestamp: paidNow.timestamp, hash: paidNow.hash }] : [];
   const decimals = Number(stream.asset.decimals);
   const pieces = segments(stream);
   const inPeriod = (action: IndexedAction) => Number(action.timestamp) >= from && Number(action.timestamp) < to;
@@ -189,11 +225,12 @@ export function streamLines(stream: IndexedStream, address: string, from: number
       accrued += end.accrued - start.accrued;
     }
     const actions = stream.actions.filter((action) => inPeriod(action) && holderAt(stream, Number(action.timestamp)) === me);
+    const mine = paidNow && holderAt(stream, paidNow.timestamp) === me;
     lines.push({
       ...base, side: "income", counterparty: lower(stream.sender),
-      covered, unfunded: accrued > covered ? accrued - covered : 0n,
+      covered, unfunded: accrued > covered ? accrued - covered : 0n, upfront: mine ? paidNow.amount : 0n,
       withdrawn: sum(actions, "Withdraw"), deposited: 0n, refunded: 0n,
-      events: actions.map(event),
+      events: [...actions.map(event), ...(mine ? upfrontEvent : [])],
     });
   }
   if (lower(stream.sender) === me) {
@@ -203,9 +240,9 @@ export function streamLines(stream: IndexedStream, address: string, from: number
     const actions = stream.actions.filter(inPeriod);
     lines.push({
       ...base, side: "spending", counterparty: holderAt(stream, to),
-      covered, unfunded: accrued > covered ? accrued - covered : 0n,
+      covered, unfunded: accrued > covered ? accrued - covered : 0n, upfront: paidNow?.amount ?? 0n,
       withdrawn: sum(actions, "Withdraw"), deposited: sum(actions, "Deposit"), refunded: sum(actions, "Refund"),
-      events: actions.map(event),
+      events: [...actions.map(event), ...upfrontEvent],
     });
   }
   return lines;
@@ -219,9 +256,10 @@ export function totals(lines: StreamLine[]): Record<string, Totals> {
   const byAddress = new Map<string, Totals & { label: string }>();
   for (const line of lines) {
     let row = byAddress.get(line.token_address);
-    if (!row) byAddress.set(line.token_address, row = { label: line.token, covered: 0n, unfunded: 0n, withdrawn: 0n, deposited: 0n, refunded: 0n, decimals: line.decimals });
+    if (!row) byAddress.set(line.token_address, row = { label: line.token, covered: 0n, unfunded: 0n, upfront: 0n, withdrawn: 0n, deposited: 0n, refunded: 0n, decimals: line.decimals });
     row.covered += line.covered;
     row.unfunded += line.unfunded;
+    row.upfront += line.upfront;
     row.withdrawn += line.withdrawn;
     row.deposited += line.deposited;
     row.refunded += line.refunded;

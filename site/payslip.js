@@ -1,9 +1,9 @@
 // The payslip view: a printable monthly statement built from Sablier's indexed history with the same
 // math the plugin's payment_statement tool uses (src/statement.ts), so both always agree.
 import { getAddress } from "viem";
-import { FLOW, indexedStreams, namesFor } from "./chain.js";
+import { FLOW, client, indexedStreams, namesFor } from "./chain.js";
 import { $, h, fill, short, money, dateText, timeText, Odometer } from "./ui.js";
-import { monthBounds, streamLines, totals } from "../src/statement.ts";
+import { creationHashes, monthBounds, streamLines, totals, upfrontFromLogs } from "../src/statement.ts";
 
 const units = (value, decimals) => Number(value) / 10 ** decimals;
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -14,9 +14,23 @@ function shiftMonth(month, delta) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-const VERB = { Create: "Stream started", Deposit: "Funded", Withdraw: "Withdrawn", Adjust: "Pay changed", Pause: "Paused", Restart: "Resumed", Refund: "Refunded", Void: "Ended", Transfer: "Handed over" };
+const VERB = { Create: "Stream started", Deposit: "Funded", Withdraw: "Withdrawn", Adjust: "Pay changed", Pause: "Paused", Restart: "Resumed", Refund: "Refunded", Void: "Ended", Transfer: "Handed over", Upfront: "Paid up front" };
 
-const NUMERIC = new Set(["Earned", "Withdrawn", "Paid", "Deposited", "Refunded", "Amount", "Not funded"]);
+const NUMERIC = new Set(["Earned", "Withdrawn", "Paid", "Deposited", "Refunded", "Amount", "Not funded", "Up front"]);
+
+/** pay_now payments, read from each stream's creation transaction (newest 25); best effort. */
+async function upfrontPayments(history) {
+  const hashes = creationHashes(history).slice(0, 25);
+  const receipts = await Promise.all(hashes.map((hash) => client.getTransactionReceipt({ hash }).catch(() => null)));
+  const logs = new Map(hashes.map((hash, i) => [hash, receipts[i]?.logs ?? null]));
+  const found = new Map();
+  for (const stream of history) {
+    const hash = stream.actions.find((a) => a.category === "Create")?.hash;
+    const upfront = hash && logs.get(hash) ? upfrontFromLogs(stream, logs.get(hash)) : null;
+    if (upfront) found.set(stream.tokenId, upfront);
+  }
+  return found;
+}
 
 function table(head, rows, className) {
   return h("div", { class: "table-wrap" }, h("table", { class: className },
@@ -52,9 +66,10 @@ export async function showPayslip(owner, ownerName, month) {
     return;
   }
   const yearStart = Date.UTC(Number(month.slice(0, 4)), 0, 1) / 1000;
-  const lines = history.flatMap((s) => streamLines(s, owner, bounds.from, to));
-  const ytd = history.flatMap((s) => streamLines(s, owner, yearStart, to));
-  const active = (line) => line.covered > 0n || line.unfunded > 0n || line.events.length > 0;
+  const upfront = await upfrontPayments(history);
+  const lines = history.flatMap((s) => streamLines(s, owner, bounds.from, to, upfront.get(s.tokenId)));
+  const ytd = history.flatMap((s) => streamLines(s, owner, yearStart, to, upfront.get(s.tokenId)));
+  const active = (line) => line.covered > 0n || line.unfunded > 0n || line.upfront > 0n || line.events.length > 0;
   const income = lines.filter((l) => l.side === "income" && active(l));
   const spending = lines.filter((l) => l.side === "spending" && active(l));
   const found = await namesFor([owner, ...lines.map((l) => l.counterparty)]);
@@ -81,11 +96,14 @@ export async function showPayslip(owner, ownerName, month) {
   const streamCell = (l) => h("td", {}, h("a", { href: `https://app.sablier.com/payments/stream/FL4-8453-${l.stream_id}`, target: "_blank", rel: "noopener", text: `#${l.stream_id}` }));
   const incomeGap = income.some((l) => l.unfunded > 0n);
   const spendGap = spending.some((l) => l.unfunded > 0n);
+  const incomeUp = income.some((l) => l.upfront > 0n);
+  const spendUp = spending.some((l) => l.upfront > 0n);
 
   const incomeRows = income.map((l) => h("tr", {},
     streamCell(l),
     h("td", { title: getAddress(l.counterparty), text: who(l.counterparty) }),
     amountCell(l.covered, l),
+    incomeUp ? amountCell(l.upfront, l) : null,
     amountCell(l.withdrawn, l),
     incomeGap ? amountCell(l.unfunded, l) : null,
   ));
@@ -93,6 +111,7 @@ export async function showPayslip(owner, ownerName, month) {
     streamCell(l),
     h("td", { title: getAddress(l.counterparty), text: who(l.counterparty) }),
     amountCell(l.covered, l),
+    spendUp ? amountCell(l.upfront, l) : null,
     amountCell(l.deposited, l),
     amountCell(l.refunded, l),
     spendGap ? amountCell(l.unfunded, l) : null,
@@ -134,23 +153,23 @@ export async function showPayslip(owner, ownerName, month) {
       odo.root,
       h("div", { class: "stats" },
         headlineSide === "income"
-          ? [stat("Withdrawn this month", sumText(incomeTotals, "withdrawn")), stat(`Earned in ${month.slice(0, 4)} so far`, sumText(ytdIncome, "covered"))]
-          : [stat("Deposited this month", sumText(spendTotals, "deposited")), stat("Refunded this month", sumText(spendTotals, "refunded")), stat(`Paid out in ${month.slice(0, 4)} so far`, sumText(ytdSpend, "covered"))],
+          ? [incomeUp ? stat("Received up front", sumText(incomeTotals, "upfront")) : null, stat("Withdrawn this month", sumText(incomeTotals, "withdrawn")), stat(`Earned in ${month.slice(0, 4)} so far`, sumText(ytdIncome, "covered"))]
+          : [spendUp ? stat("Paid up front", sumText(spendTotals, "upfront")) : null, stat("Deposited this month", sumText(spendTotals, "deposited")), stat("Refunded this month", sumText(spendTotals, "refunded")), stat(`Paid out in ${month.slice(0, 4)} so far`, sumText(ytdSpend, "covered"))],
         headlineSide === "income" && spending.length ? stat("Paid out this month", sumText(spendTotals, "covered")) : null),
       gapNote(lines, headlineSide)),
     income.length ? h("section", { class: "sheet-section" },
       h("h3", { text: "Income" }),
-      table(["Stream", "From", "Earned", "Withdrawn", incomeGap ? "Not funded" : null], incomeRows, "slip-table")) : null,
+      table(["Stream", "From", "Earned", incomeUp ? "Up front" : null, "Withdrawn", incomeGap ? "Not funded" : null], incomeRows, "slip-table")) : null,
     spending.length ? h("section", { class: "sheet-section" },
       h("h3", { text: "Pay sent" }),
-      table(["Stream", "To", "Paid", "Deposited", "Refunded", spendGap ? "Not funded" : null], spendRows, "slip-table"),
+      table(["Stream", "To", "Paid", spendUp ? "Up front" : null, "Deposited", "Refunded", spendGap ? "Not funded" : null], spendRows, "slip-table"),
       headlineSide === "income" ? gapNote(lines, "spending") : null) : null,
     !income.length && !spending.length ? h("p", { class: "sheet-empty", text: `No Payday streams paid or were paid by this address in ${monthName(month)}.` }) : null,
     events.length ? h("section", { class: "sheet-section" },
       h("h3", { text: "Transactions" }),
       table(["When", "Stream", "What", "Amount", "Transaction"], eventRows, "slip-table tx-table")) : null,
     h("footer", { class: "sheet-foot" },
-      h("p", { text: `Every figure comes from Sablier Flow v3 on Base (${FLOW}). Pay accrues at each stream's per-second rate; it counts as earned (or paid) once the stream holds the funds to back it. Deposits, withdrawals and refunds are the transactions listed, each linked to Basescan. History is read from Sablier's public indexer.` }),
+      h("p", { text: `Every figure comes from Sablier Flow v3 on Base (${FLOW}). Pay accrues at each stream's per-second rate; it counts as earned (or paid) once the stream holds the funds to back it. Deposits, withdrawals, refunds and amounts paid up front with a stream are the transactions listed, each linked to Basescan. History is read from Sablier's public indexer and the transactions themselves.` }),
       h("p", { text: `Generated ${timeText(now)}. Months are calendar months in UTC.` })),
   );
 }

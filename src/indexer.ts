@@ -1,6 +1,6 @@
-import type { Address } from "viem";
-import { FLOW } from "./flow.js";
-import type { IndexedStream } from "./statement.js";
+import type { Address, Hex } from "viem";
+import { FLOW, client } from "./flow.js";
+import { creationHashes, upfrontFromLogs, type IndexedStream, type Upfront } from "./statement.js";
 
 // Sablier's public Envio indexer (docs.sablier.com/api/streams/indexers). It supplies history (who was paid,
 // when, which transaction); live balances always come from Base itself. Its host must be allowed under the
@@ -44,4 +44,22 @@ export async function indexedStreams(address: Address, limit = 100): Promise<Ind
   const streams = body?.data?.FlowStream;
   if (!Array.isArray(streams)) throw new IndexerUnavailable(body?.errors?.[0]?.message ?? "indexer returned no data");
   return streams;
+}
+
+/**
+ * pay_now payments made alongside these streams, read from their creation transactions on Base (the newest 25
+ * creations, to stay inside the time budget). Best effort: a receipt that can't be read just means no upfront line.
+ */
+export async function upfrontPayments(streams: IndexedStream[]): Promise<Map<string, Upfront>> {
+  const hashes = creationHashes(streams).slice(0, 25);
+  const receipts = await Promise.all(hashes.map((hash) => client.getTransactionReceipt({ hash: hash as Hex }).catch(() => null)));
+  const logs = new Map(hashes.map((hash, index) => [hash, receipts[index]?.logs ?? null]));
+  const found = new Map<string, Upfront>();
+  for (const stream of streams) {
+    const hash = stream.actions.find((action) => action.category === "Create")?.hash;
+    const entries = hash ? logs.get(hash) : null;
+    const upfront = entries ? upfrontFromLogs(stream, entries) : null;
+    if (upfront) found.set(stream.tokenId, upfront);
+  }
+  return found;
 }
