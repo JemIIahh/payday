@@ -129,3 +129,12 @@ export class Odometer {
   }
   label(text) { this.root.setAttribute("aria-label", `${text} ${this.unit || ""}`.trim()); }
 }
+
+/**
+ * "Share on WhatsApp": opens WhatsApp (app or web) with the message pre-written, and the person picks the chat.
+ * No API, no phone numbers, nothing stored: it's an ordinary wa.me link.
+ */
+export function whatsappButton(text, extraClass = "") {
+  const icon = '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path fill="#25D366" d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2z"/><path fill="#fff" d="M8.6 7.3c.2-.4.4-.4.7-.4h.5c.2 0 .4 0 .6.5l.8 1.9c.1.2.1.4 0 .6l-.4.6-.4.4c-.1.2-.2.3 0 .6.2.3.8 1.3 1.7 2.1 1.2 1 2.1 1.3 2.4 1.4.3.2.5.1.6 0l.8-1c.2-.3.4-.2.6-.1l1.8.9c.3.1.4.2.5.3.1.2.1.8-.2 1.5-.3.7-1.6 1.4-2.2 1.4-.6.1-1.2.3-4-.8-3.3-1.4-5.4-4.8-5.6-5-.2-.2-1.3-1.8-1.3-3.4 0-1.6.8-2.4 1.1-2.7z"/></svg>';
+  return h("a", { class: `pill wa ${extraClass}`.trim(), href: `https://wa.me/?text=${encodeURIComponent(text)}`, target: "_blank", rel: "noopener", html: `${icon}<span>Share on WhatsApp</span>` });
+}

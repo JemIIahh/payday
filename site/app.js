@@ -14,6 +14,14 @@ const params = new URLSearchParams(location.search);
 
 function setView(view) {
   document.body.dataset.view = view;
+  // Beyond the home page the lookup shrinks into the top bar, so the page leads with the wallet itself.
+  const compact = view === "ledger" || view === "payslip";
+  const form = $("lookup"), bar = document.querySelector(".bar");
+  if (compact && form.parentElement !== bar) bar.insertBefore(form, bar.querySelector(".bar-meta"));
+  if (!compact && form.parentElement === bar) $("heroLookup").insertBefore(form, $("formMsg"));
+  form.classList.toggle("compact", compact);
+  form.querySelector("button").textContent = compact ? "Look up" : "Show streams";
+  $("addr").placeholder = compact ? "Look up a wallet or name.base.eth" : "0x… or name.base.eth";
   $("heroLedger").hidden = view !== "ledger";
   $("heroRequest").hidden = view !== "request";
   $("heroLookup").hidden = view === "request" || view === "payslip";

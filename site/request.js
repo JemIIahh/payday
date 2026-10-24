@@ -6,7 +6,7 @@ import { getAddress, isAddress } from "viem";
 import { renderSVG } from "uqr";
 import { KNOWN, resolveInput } from "./chain.js";
 import { requestPrompt } from "./prompts.js";
-import { $, h, short, money, copyButton, decimalsFor, Odometer } from "./ui.js";
+import { $, h, short, money, copyButton, decimalsFor, whatsappButton, Odometer } from "./ui.js";
 import { tokenLabel } from "../src/statement.ts";
 
 export const PERIODS = { hour: 3_600, day: 86_400, week: 604_800, month: 2_592_000, year: 31_536_000 };
@@ -70,8 +70,12 @@ export async function showRequest(params) {
   }
   const { address, name, amount, per, symbol, days, note } = request;
   const perSecond = Number(amount) / PERIODS[per];
-  document.title = `${name ?? short(address)} asks to be paid ${amount} ${symbol} a ${per}`;
-  $("reqTitle").textContent = `${name ?? short(address)} asks to be paid`;
+  // Until a name checks out, the page calls them by their address.
+  const titled = (who) => {
+    document.title = `${who} asks to be paid ${amount} ${symbol} a ${per}`;
+    $("reqTitle").textContent = `${who} asks to be paid`;
+  };
+  titled(short(address));
   $("reqAmount").textContent = `${money(Number(amount), 2)} ${symbol} a ${per}, by the second.`;
   $("reqNote").textContent = note ? `Their note: ${note}` : "";
   $("reqNote").hidden = !note;
@@ -93,7 +97,12 @@ export async function showRequest(params) {
   };
   setPrompt(null);
   const copy = copyButton(() => prompt, "Copy sentence", "big");
+  const shareText = (who) => `${who} asks to be paid ${money(Number(amount), 2)} ${symbol} a ${per}, by the second, with Payday: ${location.href}`;
+  const share = whatsappButton(shareText(short(address)), "ink");
   const check = h("p", { class: "verify", text: name ? `Checking ${name} on Base…` : `Pays ${address}. Confirm this address with them before you approve.` });
+  const heading = h("h2", { text: "How to pay" });
+  const steps = h("ol", { class: "steps" });
+  const side = h("aside", { class: "req-side" });
   if (name) {
     copy.disabled = true;
     resolveInput(name).then((resolved) => {
@@ -101,34 +110,41 @@ export async function showRequest(params) {
         check.className = "verify ok";
         check.textContent = `${name} points to ${address}, the address in this request.`;
         setPrompt(name);
+        titled(name);
+        share.href = `https://wa.me/?text=${encodeURIComponent(shareText(name))}`;
         copy.disabled = false;
       } else {
+        // A link whose name points elsewhere is a fake: show the warning and nothing to pay with.
+        $("reqTitle").textContent = "This pay-me link doesn't check out";
+        document.title = "Unverified pay-me link";
         check.className = "verify bad";
         check.textContent = `Don't pay from this link: ${name} points to ${resolved.address}, not ${address} as the link says. Ask them for a new one.`;
+        heading.textContent = "What's wrong";
+        for (const el of [steps, side, $("reqMeter"), $("reqNote")]) el.hidden = true;
       }
     }).catch((err) => {
+      // The name couldn't be checked; the sentence never had it, so paying the bare address is still an option.
       check.className = "verify bad";
-      check.textContent = `Don't pay from this link yet: ${err.message} It asks to pay ${address}; confirm that address with them first.`;
+      check.textContent = `Couldn't check ${name}: ${err.message} The sentence below pays ${address} only; confirm that address with them before you approve.`;
+      copy.disabled = false;
     });
   }
 
   const upfront = perSecond * days * 86_400;
-  const breakdown = Object.entries(PERIODS).map(([unit, seconds]) => h("li", {}, h("span", { text: `A ${unit}` }), h("b", { text: `${money(perSecond * seconds, unit === "hour" ? 4 : 2)} ${symbol}` })));
+  const breakdown = Object.entries(PERIODS).map(([unit, seconds]) => h("li", {}, h("span", { text: `${unit === "hour" ? "An" : "A"} ${unit}` }), h("b", { text: `${money(perSecond * seconds, unit === "hour" ? 4 : 2)} ${symbol}` })));
 
-  card.replaceChildren(
-    h("div", { class: "req-steps" },
-      h("h2", { text: "How to pay" }),
-      check,
-      h("ol", { class: "steps" },
-        h("li", {}, h("p", { class: "step-title", text: "Copy this sentence for your agent" }),
-          h("div", { class: "prompt-box" }, sentence, copy)),
-        h("li", {}, h("p", { class: "step-title", text: "Paste it into Claude with PayBox connected" }),
-          h("p", {}, "Your agent needs the ", h("a", { href: "https://app.paybox.sh/plugins", target: "_blank", rel: "noopener", text: "Payday plugin" }), " enabled in PayBox. It checks your wallet and prepares the payment.")),
-        h("li", {}, h("p", { class: "step-title", text: "Approve it in PayBox" }),
-          h("p", { text: `You fund ${money(upfront, 2)} ${symbol} for the first ${days} days. Pay accrues every second; you can top up, pause, or end it and get the unearned part back.` })))),
-    h("aside", { class: "req-side" },
-      qr(location.href),
-      h("p", { class: "qr-note", text: "Scan to open this request on another device." }),
-      h("ul", { class: "breakdown" }, breakdown)),
-  );
+  steps.append(
+    h("li", {}, h("p", { class: "step-title", text: "Copy this sentence for your agent" }),
+      h("div", { class: "prompt-box" }, sentence, copy)),
+    h("li", {}, h("p", { class: "step-title", text: "Paste it into Claude with PayBox connected" }),
+      h("p", {}, "Your agent needs the ", h("a", { href: "https://app.paybox.sh/plugins", target: "_blank", rel: "noopener", text: "Payday plugin" }), " enabled in PayBox. It checks your wallet and prepares the payment.")),
+    h("li", {}, h("p", { class: "step-title", text: "Approve it in PayBox" }),
+      h("p", { text: `You fund ${money(upfront, 2)} ${symbol} for the first ${days} days. Pay accrues every second; you can top up, pause, or end it and get the unearned part back.` })));
+  side.append(
+    qr(location.href),
+    h("p", { class: "qr-note", text: "Scan to open this request on another device." }),
+    share,
+    h("ul", { class: "breakdown" }, breakdown));
+
+  card.replaceChildren(h("div", { class: "req-steps" }, heading, check, steps), side);
 }

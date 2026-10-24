@@ -28,11 +28,15 @@
   </div>
 
   <div id="heroLedger" class="hero-ledger" hidden>
-    <h1 id="owner" class="owner"></h1>
-    <div id="meters" class="meters" aria-live="off"></div>
-    <p id="summary" class="summary" aria-live="polite"></p>
-    <div id="tokens" class="tokens" role="group" aria-label="Token" hidden></div>
-    <div id="walletTools" class="wallet-tools" hidden></div>
+    <div class="hl-main">
+      <div id="owner" class="owner"></div>
+      <div id="meters" class="meters" aria-live="off"></div>
+      <div id="tokens" class="tokens" role="group" aria-label="Token" hidden></div>
+    </div>
+    <aside class="hl-card" aria-label="Summary">
+      <div id="summary" class="summary" aria-live="polite"></div>
+      <div id="walletTools" class="wallet-tools" hidden></div>
+    </aside>
   </div>
 
   <div id="heroRequest" class="hero-request" hidden>
@@ -100,12 +104,9 @@
   </div>
 
   <section id="ledger" class="ledger" aria-labelledby="ledgerTitle" hidden>
-    <div class="ledger-head">
-      <h2 id="ledgerTitle">Streams</h2>
-      <div id="filters" class="filters" role="group" aria-label="Filter streams" hidden></div>
-    </div>
+    <h2 id="ledgerTitle" class="sr">Streams</h2>
     <div id="status" class="status-line" role="status"></div>
-    <ol id="rows" class="rows"></ol>
+    <div id="rows" class="rosters"></div>
   </section>
 
   <section id="payslip" class="payslip" hidden>

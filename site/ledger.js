@@ -1,4 +1,5 @@
-// The address view: live counters in the hero, one row per stream, agent prompts and per-stream history.
+// The address view: live counters and a summary card in the hero, then a roster of streams grouped into
+// paying, receiving and stopped, each with its live counter, rate, runway ring, agent prompts and history.
 import { loadStreams, namesFor, same } from "./chain.js";
 import { streamPrompts, walletPrompts } from "./prompts.js";
 import { $, h, short, clamp, fmt, money, span, timeText, copyButton, decimalsFor, Odometer } from "./ui.js";
@@ -26,12 +27,46 @@ function stateOf(s, t) {
   return dryAt(s, t) ? ["Out of funds", "bad"] : ["Streaming", "ok"];
 }
 
-const state = { owner: null, ownerName: null, names: new Map(), streams: [], offset: 0, scanned: 0, filter: "all", token: null, fetchedAt: 0, rows: new Map(), meters: [], timers: [] };
+const state = { owner: null, ownerName: null, names: new Map(), streams: [], offset: 0, scanned: 0, token: null, fetchedAt: 0, rows: new Map(), meters: [], timers: [], layout: "" };
 const nowChain = () => (Date.now() + state.offset) / 1000;
 const role = (s) => (same(s.sender, state.owner) ? "pay" : "get");
 const label = (address) => state.names.get(address) ?? short(address);
+const stopped = (s) => !accruing(s);
 
-// ---------- history ----------
+// ---------- small pieces ----------
+
+/** A colour disc per address (two hues from its bytes) with an initial, so people are easy to tell apart. */
+function avatar(address, name) {
+  const a = parseInt(address.slice(2, 6), 16) % 360, b = (a + 47) % 360;
+  const text = name ? name[0].toUpperCase() : address.slice(2, 4).toUpperCase();
+  return h("span", { class: "avatar", "aria-hidden": "true", style: `--a:${a};--b:${b}`, text });
+}
+
+const COPY_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>';
+function copyIcon(text, what) {
+  const btn = h("button", { class: "icon-btn", type: "button", "aria-label": `Copy ${what}`, title: `Copy ${what}`, html: COPY_ICON });
+  btn.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(text); btn.classList.add("done"); } catch { /* the address is visible to select */ }
+    setTimeout(() => btn.classList.remove("done"), 1400);
+  });
+  return btn;
+}
+
+/** A ring showing how much of the funded balance is still unearned: the stream's fuel gauge. */
+function ring() {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 44 44"); svg.setAttribute("class", "ring"); svg.setAttribute("aria-hidden", "true");
+  const track = document.createElementNS(NS, "circle");
+  const arc = document.createElementNS(NS, "circle");
+  for (const c of [track, arc]) { c.setAttribute("cx", "22"); c.setAttribute("cy", "22"); c.setAttribute("r", "18"); }
+  track.setAttribute("class", "ring-track"); arc.setAttribute("class", "ring-arc");
+  svg.append(track, arc);
+  return { svg, arc };
+}
+const CIRC = 2 * Math.PI * 18;
+
+// ---------- history and prompts ----------
 
 function describeAction(a, s) {
   const amount = (raw) => money(Number(raw) / 10 ** s.decimals);
@@ -69,34 +104,32 @@ function promptPanel(list) {
   )));
 }
 
-// ---------- rows ----------
-
-function makeRow(s) {
-  const odo = new Odometer("line", s.symbol);
-  const who = h("div", { class: "who" });
-  const earned = h("div", { class: "earned" }, odo.root, h("small", { text: "earned so far" }));
-  const rate = h("p", { class: "rate" });
-  const st = h("span", { class: "state" });
-  const terms = h("div", { class: "terms" }, rate, st);
-  const fill = h("div", { class: "rail-fill" });
-  const owed = h("b"), unearned = h("b"), runway = h("span");
-  const rail = h("div", { class: "rail" },
-    h("div", { class: "rail-track", role: "img", "aria-label": "Share of the funded balance already earned" }, fill),
-    h("p", { class: "rail-text" }, h("span", {}, "Waiting to be withdrawn ", owed), h("span", {}, "Not yet earned ", unearned), runway));
-  const panel = h("div", { class: "row-panel", hidden: true });
-  const tools = h("div", { class: "row-tools" });
-  const el = h("li", { class: "row" }, who, earned, terms, rail, tools, panel);
-  const r = { s, el, odo, who, rate, st, fill, owed, unearned, runway, tools, panel, open: null, cache: {} };
-  paintWho(r);
-  paintTools(r);
-  return r;
-}
-
 /** This month's document for one counterparty: their payslip from the payer, or the payer's statement for them. */
 function docLink(s) {
   const pays = role(s) === "pay";
   const other = pays ? s.recipient : s.sender;
   return `?a=${state.owner}&statement=${currentMonth()}&doc=${pays ? "payments" : "payslip"}&with=${other.toLowerCase()}`;
+}
+
+// ---------- roster rows ----------
+
+function makeRow(s) {
+  const odo = new Odometer("line", s.symbol);
+  const who = h("div", { class: "r-who" });
+  const sub = h("p", { class: "r-small" });
+  const earned = h("div", { class: "r-earned" }, odo.root, sub);
+  const rateBig = h("p", { class: "r-big" }), rateSmall = h("p", { class: "r-small" });
+  const rate = h("div", { class: "r-rate" }, rateBig, rateSmall);
+  const { svg, arc } = ring();
+  const st = h("p", { class: "state" }), left = h("p", { class: "r-small" });
+  const run = h("div", { class: "r-run" }, svg, h("div", {}, st, left));
+  const tools = h("div", { class: "r-tools" });
+  const panel = h("div", { class: "r-panel", hidden: true });
+  const el = h("li", { class: "r" }, h("div", { class: "r-main" }, who, earned, rate, run, tools), panel);
+  const r = { s, el, odo, who, sub, rateBig, rateSmall, arc, st, left, tools, panel, open: null, cache: {} };
+  paintWho(r);
+  paintTools(r);
+  return r;
 }
 
 function paintTools(r) {
@@ -112,24 +145,25 @@ function paintTools(r) {
   };
   const prompts = streamPrompts(r.s, state.owner);
   r.tools.replaceChildren(...[
-    prompts.length ? toggle("ask", "Ask your agent", () => promptPanel(streamPrompts(r.s, state.owner))) : null,
+    prompts.length ? toggle("ask", "Ask agent", () => promptPanel(streamPrompts(r.s, state.owner))) : null,
     toggle("history", "History", () => historyPanel(r.s)),
-    h("a", { class: "tool", href: docLink(r.s), text: role(r.s) === "pay" ? "Statement for this person" : "Payslip from this payer" }),
+    h("a", { class: "tool", href: docLink(r.s), text: role(r.s) === "pay" ? "Statement" : "Payslip" }),
   ].filter(Boolean));
 }
 
 function paintWho(r) {
   const s = r.s, pays = role(s) === "pay";
   const other = pays ? s.recipient : s.sender;
-  const self = same(s.sender, s.recipient);
   const name = state.names.get(other);
   r.who.replaceChildren(
-    h("p", { class: "role", text: self ? "You pay yourself" : pays ? "You pay" : "You receive from" }),
-    h("p", { class: "who-name", text: name ?? short(other), title: other }),
-    h("p", { class: "who-line" }, name ? h("span", { class: "addr", text: short(other), title: other }) : null, copyButton(other, "Copy address")),
-    h("p", { class: "sid" }, h("a", { href: `https://app.sablier.com/payments/stream/FL4-8453-${s.id}`, target: "_blank", rel: "noopener", text: `Stream ${s.id} on Sablier` })),
+    avatar(other, name),
+    h("div", { class: "r-id" },
+      h("p", { class: "r-name" }, h("span", { text: name ?? short(other), title: other }), copyIcon(other, "address")),
+      h("p", { class: "r-small" },
+        same(s.sender, s.recipient) ? "Pays yourself, " : pays ? "" : "Pays you, ",
+        h("a", { href: `https://app.sablier.com/payments/stream/FL4-8453-${s.id}`, target: "_blank", rel: "noopener", text: `stream ${s.id}` }))),
   );
-  r.el.dataset.role = pays ? "pay" : "get";
+  r.el.classList.toggle("is-stopped", stopped(s));
 }
 
 function setText(r, key, node, value) {
@@ -137,30 +171,31 @@ function setText(r, key, node, value) {
 }
 
 function updateRow(r, t) {
-  const s = r.s;
+  const s = r.s, pays = role(s) === "pay";
   const earned = earnedAt(s, t);
   r.odo.set(earned, decimalsFor(s.ratePerSec));
+  const waiting = Math.min(earned, s.balance);
+  setText(r, "sub", r.sub, waiting > 0.000001 ? `${fmt(waiting, waiting < 1 ? 4 : 2)} ${pays ? "not withdrawn yet" : "ready to withdraw"}` : "all withdrawn");
+  const live = flowing(s) || s.status === "pending";
+  setText(r, "rb", r.rateBig, live ? `${fmt(s.ratePerSec * MONTH, 2)} ${s.symbol}` : "Stopped");
+  setText(r, "rs", r.rateSmall, live ? "a month" : "no pay accruing");
   const [text, cls] = stateOf(s, t);
   setText(r, "st", r.st, text);
-  if (r.cache.cls !== cls) { r.cache.cls = cls; r.st.className = `state ${cls}`; }
-  const monthly = s.ratePerSec * MONTH;
-  setText(r, "rate", r.rate, flowing(s) || s.status === "pending" ? `${fmt(monthly, 2)} ${s.symbol} a month` : "No pay while stopped");
-  const owed = Math.min(earned, s.balance);
-  setText(r, "owed", r.owed, `${fmt(owed, 2)} ${s.symbol}`);
-  setText(r, "unearned", r.unearned, `${fmt(Math.max(0, s.balance - earned), 2)} ${s.symbol}`);
+  if (r.cache.cls !== cls) { r.cache.cls = cls; r.st.className = `state ${cls}`; r.el.dataset.state = cls; }
   const owes = Math.max(0, earned - s.balance);
-  let run = "";
-  if (s.status === "voided") run = "Stream ended";
-  else if (owes > 0.005) run = `${fmt(owes, 2)} ${s.symbol} owed but unfunded`;
-  else if (flowing(s) && s.depletion != null) run = `Runs out in ${span(s.depletion - t)}`;
-  else if (!accruing(s)) run = "Not streaming";
-  setText(r, "run", r.runway, run);
-  const share = s.balance > 0 ? clamp(earned / s.balance, 0, 1) : (earned > 0 ? 1 : 0);
-  const w = `${(share * 100).toFixed(1)}%`;
-  if (r.cache.w !== w) { r.cache.w = w; r.fill.style.width = w; }
+  let leftText = "";
+  if (s.status === "voided") leftText = "Stream ended";
+  else if (owes > 0.005) leftText = `${fmt(owes, 2)} ${s.symbol} unfunded`;
+  else if (flowing(s) && s.depletion != null) leftText = `${span(s.depletion - t)} left`;
+  else if (s.status === "pending") leftText = `${fmt(s.balance, 2)} ${s.symbol} funded`;
+  else leftText = `${fmt(Math.max(0, s.balance - earned), 2)} ${s.symbol} unearned`;
+  setText(r, "left", r.left, leftText);
+  const fuel = s.balance > 0 ? clamp((s.balance - Math.min(earned, s.balance)) / s.balance, 0, 1) : 0;
+  const dash = `${(fuel * CIRC).toFixed(1)} ${CIRC.toFixed(1)}`;
+  if (r.cache.dash !== dash) { r.cache.dash = dash; r.arc.setAttribute("stroke-dasharray", dash); r.arc.style.opacity = fuel > 0.004 ? "1" : "0"; }
 }
 
-// ---------- hero meters + summary ----------
+// ---------- hero: counters and summary card ----------
 
 function tokenList() {
   const counts = new Map();
@@ -208,37 +243,40 @@ function updateMeters(t, snap = false) {
   }
 }
 
+/** The card beside the counters: monthly totals, the next top-up, any shortfall, documents and agent prompts. */
 function summarize(t) {
   const sym = state.token;
   const mine = state.streams.filter((s) => s.symbol === sym);
   const out = mine.filter((s) => role(s) === "pay" && flowing(s)), inn = mine.filter((s) => role(s) === "get" && flowing(s));
   const sum = (l) => l.reduce((a, s) => a + s.ratePerSec * MONTH, 0);
-  const el = $("summary");
-  el.replaceChildren();
+  const people = (l) => new Set(l.map((s) => (role(s) === "pay" ? s.recipient : s.sender))).size;
   $("formMsg").textContent = state.owner && !state.streams.length
     ? `No streams found for ${state.ownerName ?? short(state.owner)} yet. Ask your agent to start one with the Payday plugin in PayBox.`
     : "";
-  const bits = [];
-  if (out.length) bits.push(`You pay ${fmt(sum(out), 2)} ${sym} a month across ${out.length} running ${out.length === 1 ? "stream" : "streams"}.`);
-  if (inn.length) bits.push(`You receive ${fmt(sum(inn), 2)} ${sym} a month across ${inn.length} ${inn.length === 1 ? "stream" : "streams"}.`);
-  if (bits.length) el.append(bits.join(" "));
+  const stat = (k, v, note, cls = "") => h("div", { class: `stat-card ${cls}`.trim() }, h("p", { class: "sc-label", text: k }), h("p", { class: "sc-value", text: v }), note ? h("p", { class: "sc-note", text: note }) : null);
+  const stats = [];
+  if (out.length) stats.push(stat("You pay", `${fmt(sum(out), 2)} ${sym}`, `a month, to ${people(out)} ${people(out) === 1 ? "person" : "people"}`));
+  if (inn.length) stats.push(stat("You receive", `${fmt(sum(inn), 2)} ${sym}`, `a month, from ${people(inn)} ${people(inn) === 1 ? "payer" : "payers"}`));
+  const incoming = mine.filter((s) => role(s) === "get");
+  const ready = incoming.reduce((a, s) => a + withdrawableAt(s, t), 0);
+  if (incoming.length && ready > 0.000001) stats.push(stat("Ready to withdraw", `${fmt(ready, ready < 1 ? 4 : 2)} ${sym}`, `across ${incoming.filter((s) => withdrawableAt(s, t) > 0.000001).length} ${incoming.length === 1 ? "stream" : "streams"}`, "good"));
   const left = (s) => (dryAt(s, t) ? -1 : s.depletion - t);
   const needs = state.streams
-    .filter((s) => role(s) === "pay" && s.status !== "voided" && (dryAt(s, t) || (flowing(s) && s.depletion != null && s.depletion - t < SOON)))
+    .filter((s) => role(s) === "pay" && s.status !== "voided" && (dryAt(s, t) || (flowing(s) && s.depletion != null)))
     .sort((a, b) => left(a) - left(b));
   if (needs.length) {
     const first = needs[0];
-    const when = dryAt(first, t) ? "is out of funds" : `runs out in ${span(first.depletion - t)}`;
-    el.append(h("span", { class: "alert", text: needs.length === 1
-      ? `Needs a top-up: stream ${first.id} ${when}.`
-      : `${needs.length} streams need a top-up within a week. Soonest: stream ${first.id}, which ${when}.` }));
+    const soon = dryAt(first, t) || first.depletion - t < SOON;
+    stats.push(stat("Next top-up", dryAt(first, t) ? "Now" : `In ${span(first.depletion - t)}`, `${label(first.recipient)}, stream ${first.id}`, soon ? "warn" : ""));
   }
-  // A payee can't top up, but should know when earned pay isn't covered.
+  const alerts = [];
   const dry = state.streams.filter((s) => role(s) === "get" && s.symbol === sym && dryAt(s, t));
   if (dry.length) {
     const unpaid = dry.reduce((a, s) => a + Math.max(0, earnedAt(s, t) - s.balance), 0);
-    el.append(h("span", { class: "alert", text: `${dry.length === 1 ? `Stream ${dry[0].id} has` : `${dry.length} streams have`} run out of funds: ${fmt(unpaid, 2)} ${sym} you've earned isn't covered yet. The payer needs to top it up.` }));
+    alerts.push(h("p", { class: "card-alert", text: `${dry.length === 1 ? `Stream ${dry[0].id} has` : `${dry.length} streams have`} run out of funds: ${fmt(unpaid, 2)} ${sym} you've earned isn't covered yet. The payer needs to top it up.` }));
   }
+  const el = $("summary");
+  el.replaceChildren(...(stats.length ? [h("div", { class: "stat-grid" }, stats)] : []), ...alerts);
 }
 
 function renderWallet() {
@@ -249,37 +287,22 @@ function renderWallet() {
   const month = currentMonth();
   const paying = state.streams.some((s) => role(s) === "pay" && s.status !== "voided");
   const receiving = state.streams.some((s) => role(s) === "get");
+  const everPaid = state.streams.some((s) => role(s) === "pay");
   const monthName = new Date().toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
   const panel = h("div", { class: "wallet-panel", hidden: true }, promptPanel(walletPrompts(state.owner, { paying, receiving, month, monthName })));
-  const ask = h("button", { class: "pill", type: "button", "aria-expanded": "false", text: "Ask your agent" });
+  const ask = h("button", { class: "pill ink", type: "button", "aria-expanded": "false", text: "Ask your agent" });
   ask.addEventListener("click", () => {
     panel.hidden = !panel.hidden;
     ask.setAttribute("aria-expanded", String(!panel.hidden));
   });
   box.append(
+    h("p", { class: "sc-label", text: `${monthName} documents` }),
     h("div", { class: "wallet-actions" },
       receiving ? h("a", { class: "pill solid", href: `?a=${state.owner}&statement=${month}&doc=payslip`, text: "Payslip" }) : null,
-      state.streams.some((s) => role(s) === "pay") ? h("a", { class: receiving ? "pill" : "pill solid", href: `?a=${state.owner}&statement=${month}&doc=payments`, text: "Payment statement" }) : null,
+      everPaid ? h("a", { class: receiving ? "pill ink" : "pill solid", href: `?a=${state.owner}&statement=${month}&doc=payments`, text: "Payment statement" }) : null,
       ask),
     panel,
   );
-}
-
-function renderFilters() {
-  const box = $("filters");
-  const pay = state.streams.filter((s) => role(s) === "pay").length, get = state.streams.length - pay;
-  box.replaceChildren();
-  if (!(pay && get)) { box.hidden = true; state.filter = "all"; return; }
-  box.hidden = false;
-  for (const [key, text, n] of [["all", "All", pay + get], ["pay", "You pay", pay], ["get", "You receive", get]]) {
-    const b = h("button", { class: "pill", type: "button", "aria-pressed": String(state.filter === key), text: `${text} ${n}` });
-    b.addEventListener("click", () => { state.filter = key; applyFilter(); renderFilters(); });
-    box.append(b);
-  }
-}
-
-function applyFilter() {
-  for (const r of state.rows.values()) r.el.hidden = state.filter !== "all" && r.el.dataset.role !== state.filter;
 }
 
 function renderTokens() {
@@ -296,6 +319,17 @@ function renderTokens() {
 
 function showStatus(node) { const el = $("status"); el.replaceChildren(); if (node) el.append(node); }
 
+/** Paying and receiving rosters, with stopped streams gathered at the end. */
+function groups() {
+  const live = (r) => !stopped(r.s);
+  const rows = [...state.rows.values()];
+  return [
+    ["You pay", rows.filter((r) => role(r.s) === "pay" && live(r))],
+    ["You receive", rows.filter((r) => role(r.s) === "get" && live(r))],
+    ["Stopped", rows.filter((r) => !live(r))],
+  ].filter(([, list]) => list.length);
+}
+
 function render() {
   const rowsEl = $("rows");
   const keep = new Map();
@@ -305,22 +339,35 @@ function render() {
     if (r) { r.s = s; paintWho(r); } else r = makeRow(s);
     keep.set(key, r);
   }
-  const changed = keep.size !== state.rows.size || [...keep.keys()].some((k) => !state.rows.has(k));
   state.rows = keep;
-  if (changed) rowsEl.replaceChildren(...[...keep.values()].map((r) => r.el));
+  const layout = groups().map(([title, list]) => `${title}:${list.map((r) => r.s.id).join(",")}`).join("|");
+  if (layout !== state.layout) {
+    state.layout = layout;
+    rowsEl.replaceChildren(...groups().map(([title, list]) => h("section", { class: "roster-group" },
+      h("h3", { class: "roster-title" }, title, h("span", { class: "roster-count", text: String(list.length) })),
+      h("div", { class: "roster" },
+        h("div", { class: "r-head", "aria-hidden": "true" },
+          h("span", { text: title === "You receive" ? "Payer" : "Person" }), h("span", { text: "Earned so far" }), h("span", { text: "Pay" }), h("span", { text: "Runway" }), h("span")),
+        h("ol", { class: "r-list" }, list.map((r) => r.el))))));
+  }
   if (!state.token || !tokenList().includes(state.token)) state.token = tokenList()[0] || null;
-  renderTokens(); renderFilters(); applyFilter(); renderWallet();
+  renderTokens(); renderWallet();
   buildMeters();
   const t = nowChain();
   for (const r of state.rows.values()) updateRow(r, t);
   updateMeters(t, true); summarize(t);
+  const name = state.ownerName;
   $("owner").replaceChildren(
-    h("span", { class: "owner-name", text: state.ownerName ?? short(state.owner) }),
-    h("span", { class: "owner-addr", text: state.owner }),
+    h("h1", { class: "owner-name", text: name ?? short(state.owner) }),
+    h("p", { class: "owner-addr" },
+      h("span", { text: state.owner }),
+      copyIcon(state.owner, "wallet address"),
+      h("a", { href: `https://basescan.org/address/${state.owner}`, target: "_blank", rel: "noopener", text: "Basescan" })),
   );
   if (!state.streams.length) {
     showStatus(null);
-    rowsEl.replaceChildren(h("li", { class: "empty" },
+    state.layout = "";
+    rowsEl.replaceChildren(h("div", { class: "empty" },
       h("p", { text: "No streams for this address yet." }),
       h("p", {}, "Ask your agent to start one with the Payday plugin in PayBox, for example ", h("code", { text: "Pay name.base.eth 100 USDC a week" }), ".")));
     state.rows = new Map();
@@ -333,7 +380,7 @@ let busy = false;
 function setBusy(on) {
   const btn = $("lookup").querySelector("button");
   btn.disabled = on;
-  btn.textContent = on ? "Reading Base…" : "Show streams";
+  btn.textContent = on ? "Reading…" : $("lookup").classList.contains("compact") ? "Look up" : "Show streams";
 }
 
 async function refresh(initial) {
@@ -358,7 +405,7 @@ async function refresh(initial) {
 }
 
 export function showLedger(owner, ownerName) {
-  Object.assign(state, { owner, ownerName, names: new Map(), streams: [], rows: new Map(), token: null, filter: "all" });
+  Object.assign(state, { owner, ownerName, names: new Map(), streams: [], rows: new Map(), token: null, layout: "" });
   $("rows").replaceChildren();
   $("ledger").hidden = false;
   document.title = `${ownerName ?? short(owner)} on Payday`;

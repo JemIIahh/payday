@@ -1,7 +1,7 @@
 // The home view: a pay calculator (what a salary looks like by the second) and the pay-me link maker.
 import { resolveInput } from "./chain.js";
 import { PERIODS, qr, requestLink } from "./request.js";
-import { $, h, money, copyButton, decimalsFor, Odometer } from "./ui.js";
+import { $, h, money, copyButton, decimalsFor, whatsappButton, Odometer } from "./ui.js";
 
 const AMOUNT = /^(0|[1-9][0-9]{0,17})(\.[0-9]{1,18})?$/;
 const NS = "http://www.w3.org/2000/svg";
@@ -47,7 +47,7 @@ function calculator() {
     odo.unit = symbol;
     odo.set(0, decimalsFor(perSecond), true);
     const rows = [["second", 1], ["hour", 3_600], ["day", 86_400], ["week", 604_800], ["month", 2_592_000]];
-    $("calcRates").replaceChildren(...rows.map(([unit, seconds]) => h("li", {}, h("span", { text: `A ${unit}` }), h("b", { text: `${money(perSecond * seconds, unit === "second" ? 6 : 2)} ${symbol}` }))));
+    $("calcRates").replaceChildren(...rows.map(([unit, seconds]) => h("li", {}, h("span", { text: `${unit === "hour" ? "An" : "A"} ${unit}` }), h("b", { text: `${money(perSecond * seconds, unit === "second" ? 6 : 2)} ${symbol}` }))));
     const perMonth = perSecond * 2_592_000;
     $("calcChart").replaceChildren(
       rampChart(perMonth || 1, symbol),
@@ -80,7 +80,7 @@ function askForm() {
         h("div", { class: "ask-result" },
           h("p", { class: "step-title", text: who.name ? `Link for ${who.name}` : "Your link" }),
           h("input", { class: "link-field", type: "text", readonly: true, value: link, "aria-label": "Pay-me link", onfocus: (e) => e.target.select() }),
-          h("div", { class: "ask-buttons" }, copyButton(link, "Copy link", "big"), h("a", { class: "pill solid", href: link, text: "Open the request" })),
+          h("div", { class: "ask-buttons" }, copyButton(link, "Copy link", "big"), whatsappButton(`Pay me by the second with Payday: ${link}`, "ink"), h("a", { class: "pill solid", href: link, text: "Open the request" })),
           h("p", { class: "panel-note", text: "Anyone you send it to sees the request, a live preview, and the sentence their agent needs. Nothing is signed until they approve in PayBox." })),
         qr(link),
       );

@@ -4,7 +4,7 @@
 import { getAddress } from "viem";
 import { FLOW, client, indexedStreams, namesFor } from "./chain.js";
 import { qr } from "./request.js";
-import { $, h, fill, short, money, span, dateText, timeText, Odometer } from "./ui.js";
+import { $, h, fill, short, money, span, dateText, timeText, whatsappButton, Odometer } from "./ui.js";
 import { creationHashes, monthBounds, streamLines, totals, upfrontFromLogs } from "../src/statement.ts";
 
 const MONTH_SECONDS = 2_592_000;
@@ -147,6 +147,7 @@ export async function showPayslip(owner, ownerName, month, options = {}) {
         try { await navigator.clipboard.writeText(location.href); btn.textContent = "Link copied"; } catch { btn.textContent = "Copy the address bar"; }
         setTimeout(() => (btn.textContent = "Copy link"), 1600);
       } }),
+      whatsappButton(`My Payday ${doc === "payslip" ? "payslip" : "payment statement"} for ${monthName(month)}, checkable against Base: ${location.origin}${location.pathname}${url({})}`, "ink"),
       h("button", { class: "pill solid", type: "button", text: "Save as PDF", onclick: () => window.print() })),
   );
 
