@@ -1,7 +1,7 @@
 // Picks the view from the URL:
 //   ?pay=0x…&amount=…&per=…   a pay-me request
 //   ?a=0x…&statement=YYYY-MM  a printable payslip
-//   ?a=0x… or ?a=ada.base.eth live streams for a wallet
+//   ?a=0x… or ?a=name.base.eth live streams for a wallet
 //   (nothing)                 home: calculator and pay-me link maker
 import { resolveInput } from "./chain.js";
 import { showHome } from "./home.js";

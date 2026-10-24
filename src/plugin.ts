@@ -8,7 +8,7 @@ import {
   FLOW, PERIODS, UserError, addressSchema, amountSchema, approvalIfNeeded, checksum, client, describeStream, descale,
   display, duration, flowAbi, flowCalls, fundingWarnings, iso, perPeriod, periodSchema, propose, proposalOutputSchema,
   ratePerSecond, readStream, readStreams, refuseContractRecipient, requireSender, resolveToken, sablierUrl,
-  streamIdSchema, streamSummarySchema, tokenSchema, tokenSymbols, walletFunds, type Period, type StreamState, type Token,
+  streamIdSchema, streamSummarySchema, symbolFor, tokenSchema, tokenSymbols, walletFunds, type Period, type StreamState, type Token,
 } from "./flow.js";
 import { IndexerUnavailable, INDEXER_URL, indexedStreams } from "./indexer.js";
 import { namesFor, partySchema, resolveParty, who } from "./names.js";
@@ -159,7 +159,7 @@ function createServer() {
 
   server.registerTool("start_stream", {
     title: "Start a payment stream",
-    description: "Pays someone continuously, by the second, through Sablier Flow on Base (e.g. 3000 USDC per month). The recipient can be a 0x address or a Base name like ada.base.eth. Optionally pays a one-off amount now in the same transaction (pay_now). If Sablier cannot yet pull the funds, returns an exact-amount approval first; call again after it confirms. sender is the public address of the PayBox wallet that pays. Relay any warnings to the owner.",
+    description: "Pays someone continuously, by the second, through Sablier Flow on Base (e.g. 3000 USDC per month). The recipient can be a 0x address or a Base name like name.base.eth. Optionally pays a one-off amount now in the same transaction (pay_now). If Sablier cannot yet pull the funds, returns an exact-amount approval first; call again after it confirms. sender is the public address of the PayBox wallet that pays. Relay any warnings to the owner.",
     inputSchema: z.object({
       sender: addressSchema.describe("Public address of the paying PayBox wallet."),
       recipient: partySchema,
@@ -282,8 +282,7 @@ function createServer() {
       tokenSymbols(streams.map((stream) => stream.token)),
       namesFor(streams.flatMap((stream) => [stream.sender, stream.recipient])),
     ]);
-    const now = Math.floor(Date.now() / 1000);
-    const rows = streams.map((stream) => describeStream(stream, symbols.get(getAddress(stream.token)) ?? "TOKEN", now, names));
+    const rows = streams.map((stream) => describeStream(stream, symbols.get(getAddress(stream.token)) ?? "TOKEN", names));
     const missing = ids.filter((id) => !streams.some((stream) => stream.id === id)).map(String);
     const text = rows.map((row) => `#${row.stream_id} ${row.status}: ${row.rate.month} ${row.token}/month to ${row.recipient_name ?? row.recipient}; withdrawable ${row.withdrawable_now}, balance ${row.balance}, runway ${row.runway}.`).join("\n") || "No streams found.";
     return data(missing.length ? `${text}\nNot found: ${missing.join(", ")}` : text, { streams: rows, missing });
@@ -320,7 +319,6 @@ function createServer() {
       namesFor([owner, ...found.streams.flatMap((stream) => [stream.sender, stream.recipient])]),
     ]);
     if (party.name) names.set(owner, party.name);
-    const now = Math.floor(Date.now() / 1000);
     const monthlyOut: Record<string, bigint> = {};
     const monthlyIn: Record<string, bigint> = {};
     const waiting: Record<string, bigint> = {};
@@ -330,14 +328,14 @@ function createServer() {
     const incoming = [];
     for (const stream of found.streams) {
       const symbol = symbols.get(getAddress(stream.token)) ?? "TOKEN";
-      const row = describeStream(stream, symbol, now, names);
+      const row = describeStream(stream, symbol, names);
       const monthly = stream.status === "streaming" || stream.status === "streaming_insolvent" ? descale(stream.rate * MONTH, stream.decimals) : 0n;
       decimalsFor[symbol] = stream.decimals;
       if (stream.sender === owner) {
         outgoing.push(row);
         monthlyOut[symbol] = (monthlyOut[symbol] ?? 0n) + monthly;
         if (stream.status === "streaming_insolvent" || stream.status === "paused_insolvent") needsAttention.push({ stream_id: row.stream_id, reason: `out of funds; owes ${row.unpaid_debt} ${symbol} it cannot pay` });
-        else if (stream.status === "streaming" && stream.depletionTime && Number(stream.depletionTime) - now < 7 * 86_400) needsAttention.push({ stream_id: row.stream_id, reason: `runs out in ${row.runway}` });
+        else if (stream.status === "streaming" && stream.depletionTime && Number(stream.depletionTime) - stream.readAt < 7 * 86_400) needsAttention.push({ stream_id: row.stream_id, reason: `runs out in ${row.runway}` });
       }
       if (stream.recipient === owner) {
         incoming.push(row);
@@ -624,11 +622,14 @@ function createServer() {
     const { symbol } = await streamToken(stream);
     const left = stream.balance - amount > stream.totalDebt ? stream.balance - amount - stream.totalDebt : 0n;
     const runway = stream.rate > 0n ? runwayText(left, stream.rate, stream.decimals) : "n/a (paused)";
+    const after = stream.rate > 0n
+      ? `The stream keeps running with about ${runway} of pay left`
+      : "The stream stays paused; fund it again when you resume it";
     return propose({
       to: FLOW,
       data: encodeFunctionData({ abi: flowAbi, functionName: "refund", args: [stream.id, amount] }),
       step: "refund",
-      summary: `Return ${display(amount, stream.decimals)} ${symbol} of unearned funds from stream #${stream.id} to ${sender}. The stream keeps running with about ${runway} of pay left, and the recipient keeps the ${display(stream.totalDebt, stream.decimals)} ${symbol} already earned.`,
+      summary: `Return ${display(amount, stream.decimals)} ${symbol} of unearned funds from stream #${stream.id} to ${sender}. ${after}, and the recipient keeps the ${display(stream.totalDebt, stream.decimals)} ${symbol} already earned.`,
       details: { stream_id: stream.id.toString(), refund: display(amount, stream.decimals), runway_after: runway },
     });
   }));
@@ -793,9 +794,9 @@ function createServer() {
 
   server.registerTool("request_payment", {
     title: "Create a pay-me link",
-    description: "Creates a shareable link asking someone to pay you by the second (e.g. 3000 USDC a month to ada.base.eth), plus the exact sentence their agent needs. The link opens a Payday page with the request, a QR code and a live preview. Nothing is signed or sent. Read-only.",
+    description: "Creates a shareable link asking someone to pay you by the second (e.g. 3000 USDC a month to name.base.eth), plus the exact sentence their agent needs. The link opens a Payday page with the request, a QR code and a live preview. Nothing is signed or sent. Read-only.",
     inputSchema: z.object({
-      recipient: partySchema.describe("Who gets paid: a 0x address or a Base name such as ada.base.eth."),
+      recipient: partySchema.describe("Who gets paid: a 0x address or a Base name such as name.base.eth."),
       amount: amountSchema.describe("Amount per period, e.g. \"3000\"."),
       per: periodSchema,
       token: tokenSchema,
@@ -816,7 +817,8 @@ function createServer() {
     const rate = ratePerSecond(args.amount, args.per);
     const pays = perPeriod(rate, token.decimals);
     const days = args.runway_days ?? PERIODS[args.per] / 86_400;
-    const params = new URLSearchParams({ pay: party.address, amount: args.amount, per: args.per, token: ["USDC", "EURC"].includes(token.symbol) ? token.symbol : token.address, days: String(days) });
+    // Known tokens travel by symbol; anything else by address, so a token merely named "USDC" never passes as USDC.
+    const params = new URLSearchParams({ pay: party.address, amount: args.amount, per: args.per, token: symbolFor(token.address) ?? token.address, days: String(days) });
     if (party.name) params.set("name", party.name);
     if (args.note) params.set("note", args.note);
     const link = `${SITE}?${params}`;

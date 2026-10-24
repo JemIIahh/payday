@@ -304,7 +304,7 @@ function render() {
     showStatus(null);
     rowsEl.replaceChildren(h("li", { class: "empty" },
       h("p", { text: "No streams for this address yet." }),
-      h("p", {}, "Ask your agent to start one with the Payday plugin in PayBox, for example ", h("code", { text: "Pay ada.base.eth 3,000 USDC a month" }), ".")));
+      h("p", {}, "Ask your agent to start one with the Payday plugin in PayBox, for example ", h("code", { text: "Pay name.base.eth 100 USDC a week" }), ".")));
     state.rows = new Map();
   } else showStatus(null);
 }

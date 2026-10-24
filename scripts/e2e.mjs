@@ -17,9 +17,9 @@ const USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const KEY = "io.paybox/transactionProposal";
 const SENDER = process.env.E2E_SENDER ?? "0x3304E22DDaa22bCdC5fCa2269b418046aE7b566A";
 const PAYEES = ["0x00000000000000000000000000000000000a11ce", "0x0000000000000000000000000000000000000b0b", "0x000000000000000000000000000000000000ca7e", "0x000000000000000000000000000000000000da7e"];
-// A real Base name, resolved on the fork exactly as on mainnet.
-const NAME = "jesse.base.eth";
-const NAMED = "0x2211d1D0020DAEA8039E46Cf1367962070d77DA9";
+// Base's own Base name, resolved on the fork exactly as on mainnet.
+const NAME = "base.base.eth";
+const NAMED = "0x97BCd93504d89D9d236E773e8f5C20fEaE466e72";
 // The wallet behind Payday's verified mainnet run (17 Oct 2026), for the read-only statement check.
 const MAINNET_PAYER = "0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550";
 

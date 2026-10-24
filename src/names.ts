@@ -16,12 +16,12 @@ const BASENAME = /^(?:[^\s.]+\.)+base\.eth$/i;
 
 // Any *.eth is let through the schema so other ENS names get a clear explanation rather than a pattern error.
 export const partySchema = z.string().min(3).max(253)
-  .regex(/^(0x[0-9a-fA-F]{40}|(?:[^\s.]+\.)+eth)$/i, "Use a 0x-prefixed EVM address or a Base name such as ada.base.eth.")
-  .describe("A 0x address, or a Base name such as ada.base.eth. For a PayBox username, resolve it to an address with PayBox first.");
+  .regex(/^(0x[0-9a-fA-F]{40}|(?:[^\s.]+\.)+eth)$/i, "Use a 0x-prefixed EVM address or a Base name such as name.base.eth.")
+  .describe("A 0x address, or a Base name such as name.base.eth. For a PayBox username, resolve it to an address with PayBox first.");
 
 export type Party = { address: Address; name: string | null };
 
-/** Resolves an address or a Base name (`ada.base.eth`) to a checksummed address. */
+/** Resolves an address or a Base name (`name.base.eth`) to a checksummed address. */
 export async function resolveParty(input: string, label: string): Promise<Party> {
   const value = input.trim();
   if (/^0x/i.test(value)) return { address: checksum(value, label), name: null };
@@ -92,7 +92,7 @@ export async function namesFor(addresses: Address[]): Promise<Map<Address, strin
   return names;
 }
 
-/** "ada.base.eth (0x1234…abcd)" when a name is known, else the full address. */
+/** "name.base.eth (0x1234…abcd)" when a name is known, else the full address. */
 export function who(address: Address, names: Map<Address, string>): string {
   const name = names.get(getAddress(address));
   return name ? `${name} (${address})` : address;

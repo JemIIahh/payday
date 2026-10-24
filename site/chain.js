@@ -57,7 +57,7 @@ export async function resolveInput(raw) {
   if (!BASENAME.test(value)) {
     throw new Error(/\.eth$/i.test(value)
       ? "Only Base names ending in .base.eth work here. For other ENS names, paste the 0x address."
-      : "Enter a wallet address (0x… 42 characters) or a Base name like ada.base.eth.");
+      : "Enter a wallet address (0x… 42 characters) or a Base name like name.base.eth.");
   }
   let name;
   try { name = normalize(value); } catch { throw new Error(`"${value}" is not a valid name.`); }

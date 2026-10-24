@@ -21,3 +21,4 @@ await build({
 });
 await cp("site/index.html", `${out}/index.html`);
 await cp("site/style.css", `${out}/style.css`);
+await cp("site/og.png", `${out}/og.png`);

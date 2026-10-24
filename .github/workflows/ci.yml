@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    name: Conformance, unit tests and Base-fork e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Type-check, two identical builds, and the PayBox MCP conformance checks from the starter.
+      - run: pnpm test
+
+      - run: pnpm test:unit
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      # Every tool, called through the built bundle, with each proposal executed on a fork of Base mainnet.
+      - name: End-to-end on a Base fork
+        run: |
+          anvil --fork-url https://mainnet.base.org --port 8547 --silent &
+          for i in $(seq 1 60); do cast block-number --rpc-url http://127.0.0.1:8547 >/dev/null 2>&1 && break; sleep 1; done
+          node scripts/e2e.mjs
+
+      - name: Dashboard builds
+        run: SITE_OUT=/tmp/site node site/build.mjs

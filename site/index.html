@@ -8,6 +8,11 @@
 <meta name="theme-color" content="#2438E8">
 <meta property="og:title" content="Payday: pay that arrives by the second">
 <meta property="og:description" content="Your agent streams pay on Base by the second. Live counters, payslips from the blockchain, and pay-me links.">
+<meta property="og:image" content="https://jemiiahh.github.io/payday/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://jemiiahh.github.io/payday/og.png">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232438E8'/%3E%3Crect x='7' y='8' width='8' height='16' rx='2' fill='%23fff'/%3E%3Crect x='17' y='8' width='8' height='16' rx='2' fill='%23FFD84D'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -42,7 +47,7 @@
     <p class="lede">Payday is a PayBox plugin. Your agent streams salaries, rent and allowances on Base, and you approve every payment. Look up any wallet or Base name to watch its pay arrive live.</p>
     <form id="lookup" class="lookup" novalidate>
       <label class="sr" for="addr">Wallet address or Base name</label>
-      <input id="addr" name="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x… or ada.base.eth" aria-describedby="formMsg">
+      <input id="addr" name="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x… or name.base.eth" aria-describedby="formMsg">
       <button type="submit">Show streams</button>
     </form>
     <p id="formMsg" class="form-msg" role="alert"></p>
@@ -81,7 +86,7 @@
         <p>Make a link for a client, an employer or a parent. It opens a page with your request, a live preview and the exact sentence their agent needs to start paying you.</p>
       </div>
       <form id="askForm" class="ask-form" novalidate>
-        <label class="field wide"><span>Pay to</span><input name="who" type="text" placeholder="0x… or ada.base.eth" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+        <label class="field wide"><span>Pay to</span><input name="who" type="text" placeholder="0x… or name.base.eth" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
         <label class="field"><span>Amount</span><input name="amount" type="text" inputmode="decimal" placeholder="3000" autocomplete="off" required></label>
         <label class="field"><span>Token</span><select name="token"><option>USDC</option><option>EURC</option></select></label>
         <label class="field"><span>Every</span><select name="per"><option value="hour">hour</option><option value="day">day</option><option value="week">week</option><option value="month" selected>month</option><option value="year">year</option></select></label>

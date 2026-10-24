@@ -3,51 +3,123 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Payday streams</title>
-<meta name="description" content="Live pay streams on Base. Paste a wallet address to see what it pays and what it is owed, counted up by the second.">
+<title>Payday: pay that arrives by the second</title>
+<meta name="description" content="Payday is a PayBox plugin: your agent streams salaries, rent and allowances on Base, by the second, and you approve every payment. Watch any wallet's pay live, print payslips, and send pay-me links.">
 <meta name="theme-color" content="#2438E8">
+<meta property="og:title" content="Payday: pay that arrives by the second">
+<meta property="og:description" content="Your agent streams pay on Base by the second. Live counters, payslips from the blockchain, and pay-me links.">
+<meta property="og:image" content="https://jemiiahh.github.io/payday/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://jemiiahh.github.io/payday/og.png">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232438E8'/%3E%3Crect x='7' y='8' width='8' height='16' rx='2' fill='%23fff'/%3E%3Crect x='17' y='8' width='8' height='16' rx='2' fill='%23FFD84D'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap">
 <link rel="stylesheet" href="./style.css">
 </head>
-<body>
+<body data-view="home">
 <header class="hero">
 <div class="hero-in">
   <div class="bar">
     <a class="mark" href="./">Payday</a>
-    <p class="bar-meta"><span id="updated">Not loaded yet</span><a href="https://github.com/JemIIahh/payday">Plugin source</a></p>
+    <p class="bar-meta"><span id="updated" class="live" hidden></span><a href="./#ask">Ask to be paid</a><a href="https://github.com/JemIIahh/payday">Plugin source</a></p>
   </div>
 
-  <div class="intro">
-    <h1>Live pay streams on Base</h1>
-    <p class="lede">Paste a wallet address to see what it pays and what it is owed, counted up by the second.</p>
+  <div id="heroLedger" class="hero-ledger" hidden>
+    <h1 id="owner" class="owner"></h1>
+    <div id="meters" class="meters" aria-live="off"></div>
+    <p id="summary" class="summary" aria-live="polite"></p>
+    <div id="tokens" class="tokens" role="group" aria-label="Token" hidden></div>
+    <div id="walletTools" class="wallet-tools" hidden></div>
+  </div>
+
+  <div id="heroRequest" class="hero-request" hidden>
+    <p id="reqTitle" class="req-who"></p>
+    <h1 id="reqAmount" class="req-amount"></h1>
+    <p id="reqNote" class="lede" hidden></p>
+    <div id="reqMeter" class="meters req-meter"></div>
+  </div>
+
+  <div id="heroLookup" class="intro">
+    <h1 class="home-title">Pay that arrives by the second</h1>
+    <p class="lede">Payday is a PayBox plugin. Your agent streams salaries, rent and allowances on Base, and you approve every payment. Look up any wallet or Base name to watch its pay arrive live.</p>
     <form id="lookup" class="lookup" novalidate>
-      <label class="sr" for="addr">Wallet address</label>
-      <input id="addr" name="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x…" aria-describedby="formMsg">
+      <label class="sr" for="addr">Wallet address or Base name</label>
+      <input id="addr" name="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x… or name.base.eth" aria-describedby="formMsg">
       <button type="submit">Show streams</button>
     </form>
     <p id="formMsg" class="form-msg" role="alert"></p>
   </div>
-
-  <div id="meters" class="meters" aria-live="off"></div>
-  <p id="summary" class="summary" aria-live="polite"></p>
-  <div id="tokens" class="tokens" role="group" aria-label="Token" hidden></div>
 </div>
 </header>
 
-<main class="ledger" aria-labelledby="ledgerTitle">
-  <div class="ledger-head">
-    <h2 id="ledgerTitle">Streams</h2>
-    <div id="filters" class="filters" role="group" aria-label="Filter streams" hidden></div>
+<main>
+  <div id="home" class="home" hidden>
+    <section class="calc" aria-labelledby="calcTitle">
+      <div class="calc-copy">
+        <h2 id="calcTitle">A salary, second by second</h2>
+        <p>A paycheck makes you wait a month for money you earned on day one. A stream pays it as you earn it.</p>
+        <form class="calc-form" onsubmit="return false">
+          <label for="calcAmount">Pay</label>
+          <input id="calcAmount" type="text" inputmode="decimal" value="3000" autocomplete="off">
+          <label class="sr" for="calcToken">Token</label>
+          <select id="calcToken"><option>USDC</option><option>EURC</option></select>
+          <label for="calcPer">every</label>
+          <select id="calcPer"><option value="hour">hour</option><option value="day">day</option><option value="week">week</option><option value="month" selected>month</option><option value="year">year</option></select>
+        </form>
+        <ul id="calcRates" class="breakdown"></ul>
+      </div>
+      <div class="calc-side">
+        <div class="calc-live">
+          <p class="meter-label">Earned since you opened this page</p>
+          <div id="calcMeter"></div>
+        </div>
+        <div id="calcChart" class="calc-chart"></div>
+      </div>
+    </section>
+
+    <section id="ask" class="ask" aria-labelledby="askTitle">
+      <div class="ask-copy">
+        <h2 id="askTitle">Ask to be paid by the second</h2>
+        <p>Make a link for a client, an employer or a parent. It opens a page with your request, a live preview and the exact sentence their agent needs to start paying you.</p>
+      </div>
+      <form id="askForm" class="ask-form" novalidate>
+        <label class="field wide"><span>Pay to</span><input name="who" type="text" placeholder="0x… or name.base.eth" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+        <label class="field"><span>Amount</span><input name="amount" type="text" inputmode="decimal" placeholder="3000" autocomplete="off" required></label>
+        <label class="field"><span>Token</span><select name="token"><option>USDC</option><option>EURC</option></select></label>
+        <label class="field"><span>Every</span><select name="per"><option value="hour">hour</option><option value="day">day</option><option value="week">week</option><option value="month" selected>month</option><option value="year">year</option></select></label>
+        <label class="field"><span>Days funded</span><input name="days" type="number" min="1" max="3650" placeholder="30"></label>
+        <label class="field wide"><span>Note, shown on the request</span><input name="note" type="text" maxlength="80" placeholder="Design retainer, November"></label>
+        <button type="submit">Make my link</button>
+        <p id="askMsg" class="ask-msg" role="alert"></p>
+      </form>
+      <div id="askOut" class="ask-out" hidden></div>
+    </section>
   </div>
-  <div id="status" class="status-line" role="status"></div>
-  <ol id="rows" class="rows"></ol>
+
+  <section id="ledger" class="ledger" aria-labelledby="ledgerTitle" hidden>
+    <div class="ledger-head">
+      <h2 id="ledgerTitle">Streams</h2>
+      <div id="filters" class="filters" role="group" aria-label="Filter streams" hidden></div>
+    </div>
+    <div id="status" class="status-line" role="status"></div>
+    <ol id="rows" class="rows"></ol>
+  </section>
+
+  <section id="payslip" class="payslip" hidden>
+    <nav id="slipNav" class="slip-nav" aria-label="Payslip"></nav>
+    <article id="sheet" class="sheet"></article>
+  </section>
+
+  <section id="request" class="request" hidden>
+    <div id="requestCard" class="req-card"></div>
+  </section>
 </main>
 
 <footer class="foot">
-  <p>Reads Sablier Flow v3 on Base straight from your browser. No wallet connection, and nothing is signed here.</p>
+  <p>Reads Sablier Flow v3 on Base and Sablier's public indexer straight from your browser. No wallet connection, and nothing is signed here: every action is a sentence you give your agent, and you approve it in PayBox.</p>
   <p>A month is 30 days. <a href="https://docs.sablier.com/concepts/flow/overview">How Sablier Flow works</a></p>
 </footer>
 <script src="./app.js"></script>

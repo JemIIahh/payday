@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- Source of og.png, the 1200x630 social card. Re-render: node site/og.mjs (needs Playwright). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap">
+<style>
+  html, body { margin: 0; width: 1200px; height: 630px; }
+  body {
+    box-sizing: border-box; padding: 64px 72px; background: #2438e8; color: #fff;
+    font-family: "Bricolage Grotesque", sans-serif; display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .mark { font-weight: 800; font-size: 34px; letter-spacing: -0.02em; }
+  h1 { margin: 0; font-size: 104px; line-height: 0.94; font-weight: 800; letter-spacing: -0.04em; max-width: 9.5em; }
+  .tiles { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 96px; line-height: 1; }
+  .tiles span { display: grid; place-items: center; width: 66px; height: 116px; border-radius: 14px; background: #fff; color: #0e1330; }
+  .tiles span.d { background: #ffd84d; }
+  .tiles i { font-style: normal; width: 26px; text-align: center; }
+  .tiles small { margin-left: 18px; font-size: 32px; font-weight: 600; }
+  .row { display: flex; align-items: flex-end; justify-content: space-between; }
+  .foot { font-size: 26px; font-weight: 600; opacity: 0.92; text-align: right; line-height: 1.35; }
+</style>
+</head>
+<body>
+  <div class="mark">Payday</div>
+  <h1>Every second is payday</h1>
+  <div class="row">
+    <div class="tiles"><span>3</span><i>,</i><span>0</span><span>0</span><span>0</span><i>.</i><span class="d">0</span><span class="d">0</span><small>USDC a month</small></div>
+    <div class="foot">A PayBox plugin<br>Streams pay on Base</div>
+  </div>
+</body>
+</html>

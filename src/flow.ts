@@ -179,14 +179,23 @@ export type StreamState = {
   id: bigint; sender: Address; recipient: Address; token: Address; decimals: number; rate: bigint; balance: bigint;
   status: (typeof STATUS)[number]; withdrawable: bigint; refundable: bigint; totalDebt: bigint; uncoveredDebt: bigint;
   depletionTime: bigint | null; snapshotTime: number;
+  /** Block timestamp the values were read at, so runways are measured in chain time. */
+  readAt: number;
 };
+
+const MULTICALL3: Address = "0xcA11bde05977b3631167028862bE2a173976CA11";
+const clockAbi = parseAbi(["function getCurrentBlockTimestamp() view returns (uint256)"]);
 
 export async function readStreams(ids: bigint[]): Promise<Map<bigint, StreamState>> {
   if (ids.length === 0) return new Map();
-  const results = await client.multicall({
-    contracts: ids.flatMap((id) => STREAM_FIELDS.map((functionName) => ({ address: FLOW, abi: flowAbi, functionName, args: [id] }) as const)),
-    allowFailure: true,
-  });
+  const [results, clock] = await Promise.all([
+    client.multicall({
+      contracts: ids.flatMap((id) => STREAM_FIELDS.map((functionName) => ({ address: FLOW, abi: flowAbi, functionName, args: [id] }) as const)),
+      allowFailure: true,
+    }),
+    client.readContract({ address: MULTICALL3, abi: clockAbi, functionName: "getCurrentBlockTimestamp" }).catch(() => BigInt(Math.floor(Date.now() / 1000))),
+  ]);
+  const readAt = Number(clock);
   const streams = new Map<bigint, StreamState>();
   ids.forEach((id, index) => {
     const row = results.slice(index * STREAM_FIELDS.length, (index + 1) * STREAM_FIELDS.length);
@@ -211,6 +220,7 @@ export async function readStreams(ids: bigint[]): Promise<Map<bigint, StreamStat
       uncoveredDebt: (value("uncoveredDebtOf") as bigint | undefined) ?? 0n,
       depletionTime: depletion && depletion > 0n ? depletion : null,
       snapshotTime: Number(value("getSnapshotTime") ?? 0),
+      readAt,
     });
   });
   return streams;
@@ -240,8 +250,9 @@ export function sablierUrl(id: bigint): string {
   return `https://app.sablier.com/payments/stream/FL4-8453-${id}`;
 }
 
-export function describeStream(stream: StreamState, symbol: string, now = Math.floor(Date.now() / 1000), names = new Map<Address, string>()) {
+export function describeStream(stream: StreamState, symbol: string, names = new Map<Address, string>()) {
   const d = stream.decimals;
+  const now = stream.readAt;
   const live = stream.status === "streaming";
   const runsOut = live && stream.depletionTime ? Number(stream.depletionTime) : null;
   return {
