@@ -6,7 +6,7 @@
 
 Tell your agent "pay my nanny 3,000 USDC a month" and Payday turns it into a live payment stream on Base, to her 0x address or her Base name. She earns every second and can withdraw whenever she likes. You can top up, pause, change the rate, or end it and take back whatever hasn't been earned, to the second. A whole team's payroll takes one approval: to start it, to keep it funded, and to end it.
 
-Payday is a [PayBox](https://paybox.sh) plugin. It never holds money or keys. Every tool that moves funds only *proposes* a transaction; PayBox simulates it and asks the owner to approve it with a passkey before anything is signed. Streams run on [Sablier Flow](https://docs.sablier.com/concepts/flow/overview) v3.
+Payday is a [PayBox](https://paybox.sh) plugin. It never holds money or keys. Every tool that moves funds only *proposes* a transaction; PayBox simulates it and signs only what the wallet's approval policy allows, which can require the owner's approval for every transaction. Streams run on [Sablier Flow](https://docs.sablier.com/concepts/flow/overview) v3.
 
 Built for MoonPay Hackathons: PayBox Chapter 1 (Consumer finance). Version 0.2 adds the improvements listed in the [changelog](CHANGELOG.md), made after Payday was named a finalist. The original submission is tagged `v0.1.0`.
 
@@ -18,9 +18,9 @@ You don't need to install anything to check what Payday does.
 |---|---|---|
 | The demo video | [`docs/demo.mp4`](docs/demo.mp4) | The problem, the idea, a real Claude and PayBox run, and the refund |
 | A live wallet | [Dashboard for the demo payer](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550) | Streams read live from Base, with each stream's history and the sentence to give your agent for every action |
-| A payslip from the blockchain | [October 2026 payslip](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550&statement=2026-10) | Paid, deposited and refunded to the token unit, with every transaction linked. Print it or save it as a PDF |
+| Documents from the blockchain | [Payment statement for the payer](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550&statement=2026-10&doc=payments) and [payslip for a payee](https://jemiiahh.github.io/payday/?a=0xb3704310e72538342b0cb28ee41d62e77d64f7be&statement=2026-10&doc=payslip), October 2026 | Paid, paid up front, deposited and refunded to the token unit, with every transaction linked. Print them or save them as PDFs |
 | A pay-me link | [Example request: 500 USDC a month to the demo wallet](https://jemiiahh.github.io/payday/?pay=0x5Dae41Fd8A0627E3E6d5a3B020696F8CC7C57550&amount=500&per=month&token=USDC&days=30&note=Example+request+from+the+Payday+README) | What a payer sees: the request, a live preview, a QR code, an address check and the exact sentence for their agent |
-| Real transactions | [Verified on Base mainnet](#verified-on-base-mainnet) | Approve exactly 1 USDC, start a stream, end it and refund, on Basescan |
+| Real transactions | [Verified on Base mainnet](#verified-on-base-mainnet) | A three-person payroll with pay up front in one transaction, and a stream started, ended and refunded, on Basescan |
 | The code | [`src/plugin.ts`](src/plugin.ts) (all 17 tools), [`src/flow.ts`](src/flow.ts) (Sablier calls, amounts, checks), [`src/statement.ts`](src/statement.ts) (payslip math) | Small and readable |
 | The tests | [`scripts/e2e.mjs`](scripts/e2e.mjs), [`test/statement.test.ts`](test/statement.test.ts), [CI](https://github.com/JemIIahh/payday/actions/workflows/ci.yml) | Every tool run against a fork of Base mainnet, each proposal executed and its outcome checked on chain |
 
@@ -28,7 +28,7 @@ You don't need to install anything to check what Payday does.
 
 Pay is earned every second but arrives in lumps. A nanny, a freelancer or a contractor works all month and waits for the money; a parent's allowance or a roommate's rent is all or nothing; cancelling a subscription halfway through rarely gives anything back. Streaming fixes that, but today it means leaving the chat, opening another app and signing by hand, and few people want to hand an AI the keys to a wallet.
 
-Payday keeps the agent in the loop without giving it custody. The agent plans and proposes, Payday checks and warns, PayBox shows exactly what will happen, and the human approves.
+Payday keeps the agent in the loop without giving it custody. The agent plans and proposes, Payday checks and warns, PayBox simulates the transaction, and nothing is signed beyond what the owner's approval policy allows.
 
 ## What it looks like
 
@@ -78,7 +78,7 @@ you ──"pay name.base.eth 3000 USDC a month"──▶ agent (Claude)
                                                 │      └──reads──▶ Sablier indexer (history)
                                                 │ unsigned proposal + plain-language warnings
                                                 ▼
-                               PayBox: simulates it, asks for your passkey, signs, sends
+                               PayBox: simulates it, applies your approval policy, signs, sends
                                                 ▼
                                Sablier Flow streams USDC to them, by the second
 ```
@@ -87,7 +87,7 @@ PayBox takes one transaction per proposal. A new stream therefore needs two appr
 
 ## How it keeps you safe
 
-- **Proposals only.** Payday has no keys. PayBox simulates every proposal and the owner approves it.
+- **Proposals only.** Payday has no keys. PayBox simulates every proposal and signs only under the owner's approval policy; set it to ask you every time and nothing moves without your approval.
 - **Exact approvals.** Payday never asks for an unlimited allowance. A top-up approval adds one hour of headroom, because the amount owed keeps growing while the approval waits.
 - **Warnings before approval,** in plain words for the agent to relay:
   - most of the wallet's balance is going into one deposit;

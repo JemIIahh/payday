@@ -244,7 +244,8 @@ ok("withdraw_all with nothing waiting refused", nothing.isError === true, nothin
 
 // ---------- statement (read-only, Base mainnet + Sablier's indexer) ----------
 const statement = await callTool("payment_statement", { address: MAINNET_PAYER, month: "2026-10" }, {});
-const paid = statement.structuredContent?.spending.totals.USDC;
+// Stream 5 is closed, so its October row never changes; the month's totals grow with later runs.
+const paid = statement.structuredContent?.spending.streams.find((row) => row.stream_id === "5")?.amounts;
 ok("payment_statement (mainnet)", !statement.isError && paid?.paid === "0.081666" && paid.deposited === "1" && paid.refunded === "0.918334", statement.content[0].text.replace(/\n/g, " | ").slice(0, 220));
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
