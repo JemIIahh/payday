@@ -248,6 +248,10 @@ CI runs all of this on every push.
 
 Payday's own code is `src/` (except `paybox.ts`), `test/`, `scripts/e2e.mjs` and the dashboard in `site/`.
 
+## How it was built
+
+Payday was built by [JemIIahh](https://github.com/JemIIahh) with [Claude Code](https://claude.com/claude-code), Anthropic's coding agent, as an AI pair programmer. Claude Code wrote most of the code, tests and documentation; commits it co-wrote carry a `Co-Authored-By: Claude` line. JemIIahh chose the idea and the users it serves, set the priorities, reviewed the design and steered it, and ran every mainnet transaction above themselves, from their own PayBox wallet in Claude chat.
+
 ## Limits
 
 - Hackathon software, not audited. Start with small amounts.
