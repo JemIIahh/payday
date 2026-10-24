@@ -64,6 +64,13 @@ async function execute(result, from = SENDER) {
   const { to, value, data } = proposal.transaction;
   const hash = await wallet.sendTransaction({ account: from, to, value: BigInt(value), data });
   const receipt = await pub.waitForTransactionReceipt({ hash });
+  if (receipt.status !== "success") {
+    // Replay it on the block before to surface Sablier's revert reason in the log.
+    const block = await pub.getBlock({ blockNumber: receipt.blockNumber });
+    const reason = await pub.call({ account: from, to, value: BigInt(value), data, blockNumber: receipt.blockNumber - 1n })
+      .then(() => "replay succeeded on the previous block").catch((error) => error.shortMessage ?? error.message);
+    console.log(`  reverted in block ${receipt.blockNumber} (t=${block.timestamp}, gas used ${receipt.gasUsed}): ${reason}`);
+  }
   return receipt;
 }
 
