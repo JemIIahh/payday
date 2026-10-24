@@ -149,9 +149,9 @@ Through Claude chat, PayBox and Payday 0.2, from the same PayBox wallet. Claude 
 | Step | What happened | Transaction |
 |---|---|---|
 | Approve | Sablier allowed to pull exactly 1.60 USDC; the allowance left afterwards is 0 | [`0x078d9bd3…3faa68`](https://basescan.org/tx/0x078d9bd34dbeb7d3bb906f0f37a3579635a4356fdd4433abeb35a5d98b3faa68) |
-| Payroll | Streams 7, 8 and 9, at 0.5 USDC a week each, funded for 7 days, plus 0.10 USDC paid to the first payee up front, all in **one transaction** | [`0x6cf5b1d3…9beb04`](https://basescan.org/tx/0x6cf5b1d323ead54c61f2d7446dac9440c18cc398088a5d6caba2f4ba119beb04) |
+| Payroll | Streams [7](https://app.sablier.com/payments/stream/FL4-8453-7), [8](https://app.sablier.com/payments/stream/FL4-8453-8) and [9](https://app.sablier.com/payments/stream/FL4-8453-9), at 0.5 USDC a week each, funded for 7 days, plus 0.10 USDC paid to the first payee up front, all in **one transaction** | [`0x6cf5b1d3…9beb04`](https://basescan.org/tx/0x6cf5b1d323ead54c61f2d7446dac9440c18cc398088a5d6caba2f4ba119beb04) |
 
-The streams run until 31 October and tick live on the [dashboard](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550). The [payer's](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550&statement=2026-10) and the [first payee's](https://jemiiahh.github.io/payday/?a=0xb3704310e72538342b0cb28ee41d62e77d64f7be&statement=2026-10) October payslips show the same transactions, including the 0.10 USDC paid up front.
+The streams run until 31 October and tick live on the [dashboard](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550). The payer's [October payment statement](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550&statement=2026-10&doc=payments) and the first payee's [October payslip](https://jemiiahh.github.io/payday/?a=0xb3704310e72538342b0cb28ee41d62e77d64f7be&statement=2026-10&doc=payslip) show the same transactions, including the 0.10 USDC paid up front.
 
 ### Payday 0.1: start, end and refund (17 October 2026)
 
@@ -163,7 +163,7 @@ One full run through Claude, PayBox and Payday 0.1 on 17 October 2026, from a Pa
 | Start stream | Stream 5: 1 USDC an hour to `0xB370…f7be`, funded with 1 USDC | [`0xb9a2afdd…f85422`](https://basescan.org/tx/0xb9a2afdd18208cab8e6e4c3cfaa45c8e4b4fb192f1985591af97d41cacf85422) |
 | End stream | Paused and refunded in one transaction after about 4.9 minutes | [`0xc7a1f2fa…1d6632`](https://basescan.org/tx/0xc7a1f2fa5626ecf11429bde1e19e62c2ed5c80fc35e070d820c6e39b0b1d6632) |
 
-The recipient earned 0.081666 USDC and the payer got 0.918334 USDC back, which adds up to the 1 USDC deposited. The three transactions cost under a cent in gas. The [payslip for that wallet](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550&statement=2026-10) reproduces those numbers from chain history, and so does the unit test in [`test/statement.test.ts`](test/statement.test.ts).
+The recipient earned 0.081666 USDC and the payer got 0.918334 USDC back, which adds up to the 1 USDC deposited. The three transactions cost under a cent in gas. The [payment statement for that wallet](https://jemiiahh.github.io/payday/?a=0x5dae41fd8a0627e3e6d5a3b020696f8cc7c57550&statement=2026-10&doc=payments) reproduces those numbers from chain history, and so does the unit test in [`test/statement.test.ts`](test/statement.test.ts).
 
 ## Configure in the PayBox developer portal
 

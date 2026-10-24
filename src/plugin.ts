@@ -5,7 +5,7 @@ import * as z from "zod/v4";
 import { findStreams, pastRecipients } from "./discover.js";
 import {
   FLOW, PERIODS, UserError, addressSchema, amountSchema, approvalIfNeeded, checksum, client, describeStream, descale,
-  display, duration, flowAbi, flowCalls, fundingWarnings, iso, perPeriod, periodSchema, propose, proposalOutputSchema,
+  display, duration, flowAbi, flowCalls, foreignFundingWarning, fundingWarnings, iso, perPeriod, periodSchema, propose, proposalOutputSchema,
   ratePerSecond, readStream, readStreams, refuseContractRecipient, requireSender, resolveToken, sablierUrl,
   streamIdSchema, streamSummarySchema, symbolFor, tokenAmount, tokenSchema, tokenSymbols, walletFunds, type Period, type StreamState, type Token,
 } from "./flow.js";
@@ -14,7 +14,7 @@ import { namesFor, partySchema, resolveParty, who } from "./names.js";
 import { currentMonth, monthBounds, streamLines, totals, type StreamLine } from "./statement.js";
 
 const NAME = "payday";
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const PROTOCOL_VERSION = "2026-07-28";
 // The companion dashboard: payslips, pay-me links and live counters. PAYDAY_SITE_URL overrides it.
 const SITE = process.env.PAYDAY_SITE_URL ?? "https://jemiiahh.github.io/payday/";
@@ -174,7 +174,7 @@ function createServer() {
     title: "Start a payment stream",
     description: "Pays someone continuously, by the second, through Sablier Flow on Base (e.g. 3000 USDC per month). The recipient can be a 0x address or a Base name like name.base.eth. Optionally pays a one-off amount now in the same transaction (pay_now). If Sablier cannot yet pull the funds, returns an exact-amount approval first; call again after it confirms. sender is the public address of the PayBox wallet that pays. Relay any warnings to the owner.",
     inputSchema: z.object({
-      sender: addressSchema.describe("Public address of the paying PayBox wallet."),
+      sender: addressSchema.describe("Public address of the paying PayBox wallet (from PayBox list_credentials)."),
       recipient: partySchema,
       amount: amountSchema.describe("Amount paid per period, e.g. \"3000\"."),
       per: periodSchema,
@@ -217,6 +217,7 @@ function createServer() {
       summary: `Stream ${args.amount} ${token.symbol} per ${args.per} (${pays.day}/day) from ${sender} to ${who(recipient, names)}, funded with ${display(deposit, token.decimals)} ${token.symbol} (about ${runwayText(deposit, rate, token.decimals)} of runway)${start ? `, starting ${iso(start)}` : ", starting now"}.${payNow > 0n ? ` Also pays ${display(payNow, token.decimals)} ${token.symbol} to them right away, in the same transaction.` : ""} The recipient can withdraw what has accrued at any time; you can pause, top up, change the rate or end it.`,
       details: { token: token.symbol, recipient, recipient_name: names.get(recipient) ?? "", rate_per_second_scaled: rate.toString(), per_month: pays.month, deposit: display(deposit, token.decimals), pay_now: display(payNow, token.decimals), runway: runwayText(deposit, rate, token.decimals), contract: FLOW },
       warnings,
+      next: `Once PayBox confirms it, share ${SITE}?a=${recipient} with ${who(recipient, names)}: their pay counting up live, what is ready to withdraw, and monthly payslips.`,
     });
   }));
 
@@ -224,7 +225,7 @@ function createServer() {
     title: "Start payroll streams",
     description: "Starts per-second pay streams for up to 25 people in ONE transaction (one PayBox approval) via Sablier Flow batch on Base. Each person gets their own stream funded for the same runway, and can also get a one-off amount now (pay_now). Recipients can be 0x addresses or Base names. Returns a single exact-amount approval first if needed. Relay any warnings to the owner.",
     inputSchema: z.object({
-      sender: addressSchema.describe("Public address of the paying PayBox wallet."),
+      sender: addressSchema.describe("Public address of the paying PayBox wallet (from PayBox list_credentials)."),
       per: periodSchema,
       token: tokenSchema,
       runway_days: runwayDaysSchema.optional().describe("Days of pay to fund for everyone. Defaults to one period."),
@@ -280,6 +281,7 @@ function createServer() {
       summary: `Start ${rows.length} pay streams in one transaction: ${rows.map((row) => `${payee(row.label, row.recipient, names)} ${row.amount} ${token.symbol}/${args.per}${row.payNow > 0n ? ` (+${display(row.payNow, token.decimals)} now)` : ""}`).join("; ")}. Total ${display(total, token.decimals)} ${token.symbol} funds ${runway} days${upfront > 0n ? `, including ${display(upfront, token.decimals)} paid up front` : ""}; payroll burn is ${display(monthly, token.decimals)} ${token.symbol} per 30 days.`,
       details: { token: token.symbol, streams: rows.length.toString(), recipients: rows.map((row) => row.recipient).join(","), total_deposit: display(total, token.decimals), paid_up_front: display(upfront, token.decimals), monthly_burn: display(monthly, token.decimals), runway_days: runway.toString(), contract: FLOW },
       warnings,
+      next: `Once PayBox confirms it, the payroll is live at ${SITE}?a=${sender}. Each person can follow their own pay and payslips at ${SITE}?a= followed by their address.`,
     });
   }));
 
@@ -384,7 +386,7 @@ function createServer() {
 
   server.registerTool("top_up_stream", {
     title: "Top up a payment stream",
-    description: "Adds funds to a Sablier Flow stream on Base, either a fixed amount or enough to cover unpaid debt plus runway_days of future pay. Anyone can fund a stream. Returns an exact-amount approval first if needed.",
+    description: "Adds funds to a Sablier Flow stream on Base, either a fixed amount or enough to cover unpaid debt plus runway_days of future pay. Anyone can fund a stream, but only its sender can refund unearned funds, so the proposal warns when the funder is not the sender. Returns an exact-amount approval first if needed.",
     inputSchema: z.object({
       stream_id: streamIdSchema,
       funder: addressSchema.describe("Public address of the PayBox wallet that pays."),
@@ -409,7 +411,7 @@ function createServer() {
     if (amount === 0n) throw new UserError("amount must be greater than zero.");
     const headroom = args.runway_days !== undefined ? descale(stream.rate * 3_600n, token.decimals, "up") : 0n;
     const funds = await walletFunds(funder, token);
-    const warnings = fundingWarnings({ token, balance: funds.balance, outlay: amount, monthly: descale(stream.rate * MONTH, token.decimals) });
+    const warnings = [...foreignFundingWarning(funder, [stream]), ...fundingWarnings({ token, balance: funds.balance, outlay: amount, monthly: descale(stream.rate * MONTH, token.decimals) })];
     const approval = await approvalIfNeeded(funder, token, amount, "top_up_stream", headroom, warnings, funds);
     if (approval) return approval;
     const after = { ...stream, balance: stream.balance + amount };
@@ -458,7 +460,7 @@ function createServer() {
     const burn = rows.reduce((sum, row) => sum + row.stream.rate, 0n);
     const headroom = descale(burn * 3_600n, token.decimals, "up");
     const [funds, names] = await Promise.all([walletFunds(funder, token), namesFor(rows.map((row) => row.stream.recipient))]);
-    const warnings = fundingWarnings({ token, balance: funds.balance, outlay: total, monthly: descale(burn * MONTH, token.decimals) });
+    const warnings = [...foreignFundingWarning(funder, rows.map((row) => row.stream)), ...fundingWarnings({ token, balance: funds.balance, outlay: total, monthly: descale(burn * MONTH, token.decimals) })];
     const approval = await approvalIfNeeded(funder, token, total, "top_up_streams", headroom, warnings, funds);
     if (approval) return approval;
     return propose({

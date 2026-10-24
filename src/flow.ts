@@ -325,12 +325,12 @@ export const proposalOutputSchema = z.object({
   details: z.record(z.string(), z.string()),
 }).strict();
 
-export function propose(input: { to: Address; data: Hex; value?: bigint; step: string; summary: string; details: Record<string, string>; warnings?: string[] }) {
+export function propose(input: { to: Address; data: Hex; value?: bigint; step: string; summary: string; details: Record<string, string>; warnings?: string[]; next?: string }) {
   const proposal = proposeEvm({ chain: CHAIN, to: input.to, value: (input.value ?? 0n).toString(), data: input.data });
   const warnings = input.warnings ?? [];
   const check = warnings.length ? `\n\nCheck before approving:\n${warnings.map((warning) => `- ${warning}`).join("\n")}` : "";
   return {
-    content: [{ type: "text" as const, text: `${input.summary}${check}\n\nUnsigned proposal only: PayBox simulates it and asks for approval before anything is signed.` }],
+    content: [{ type: "text" as const, text: `${input.summary}${check}\n\nUnsigned proposal only: PayBox simulates it and signs only under the wallet's approval policy.${input.next ? `\n\n${input.next}` : ""}` }],
     structuredContent: { ...proposal.structuredContent, step: input.step, summary: input.summary, warnings, details: input.details },
   };
 }
@@ -347,9 +347,9 @@ export function flowCalls(calls: Hex[]): Hex {
 export async function approvalIfNeeded(owner: Address, token: Token, needed: bigint, retry: string, headroom = 0n, warnings: string[] = [], funds?: Awaited<ReturnType<typeof walletFunds>>) {
   funds ??= await walletFunds(owner, token);
   if (funds.balance < needed) {
-    throw new UserError(`The wallet ${owner} holds ${display(funds.balance, token.decimals)} ${token.symbol}, but this needs ${display(needed, token.decimals)} ${token.symbol}.`);
+    throw new UserError(`The wallet ${owner} holds ${display(funds.balance, token.decimals)} ${token.symbol}, but this needs ${display(needed, token.decimals)} ${token.symbol}. Add ${token.symbol} on Base first (PayBox get_buy_link or get_deposit_link, or request_swap from another token), then call ${retry} again.`);
   }
-  if (funds.eth === 0n) throw new UserError(`The wallet ${owner} has no ETH on Base for network fees.`);
+  if (funds.eth === 0n) throw new UserError(`The wallet ${owner} has no ETH on Base for network fees. Add a little ETH on Base first (PayBox get_buy_link or get_deposit_link), then call ${retry} again.`);
   if (funds.allowance >= needed) return null;
   // Headroom covers amounts that keep growing while the approval waits (e.g. runway top-ups).
   const approve = needed + headroom > funds.balance ? funds.balance : needed + headroom;
@@ -386,6 +386,14 @@ export function fundingWarnings(input: { token: Token; balance: bigint; outlay: 
     warnings.push(`Afterwards the wallet holds ${display(left, token.decimals, 2)} ${sym}, about ${days < 1 ? "less than a day" : `${days} days`} of this pay for future top-ups.`);
   }
   return warnings;
+}
+
+/** Sablier lets anyone deposit into a stream, but only its sender can take unearned funds back. */
+export function foreignFundingWarning(funder: Address, streams: { id: bigint; sender: Address }[]): string[] {
+  const foreign = streams.filter((stream) => stream.sender.toLowerCase() !== funder.toLowerCase());
+  if (foreign.length === 0) return [];
+  const list = foreign.map((stream) => `#${stream.id} (sender ${stream.sender})`).join(", ");
+  return [`${funder} is not the sender of stream(s) ${list}. The sender can refund to themselves anything deposited that the recipient hasn't earned yet, so fund it only for someone you trust.`];
 }
 
 export function requireSender(stream: StreamState, sender: Address) {

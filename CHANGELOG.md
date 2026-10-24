@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 (October 2026)
+
+- **Funding someone else's stream warns you.** Sablier lets anyone deposit into a stream, but only its sender can take unearned funds back. `top_up_stream` and `top_up_streams` now say so when the funder isn't the sender.
+- **Short of funds? The error says what to do.** When the wallet lacks the token or ETH for gas, the error points the agent to PayBox's buy, deposit and swap tools, then back to the same call.
+- **After a stream starts, the agent has a link to share.** `start_stream` and `start_payroll` end with the payee's live pay page (and the payer's dashboard for payroll).
+- Proposal text describes PayBox accurately: it signs only under the wallet's approval policy.
+
 ## 0.2.0 (October 2026, after the finalist announcement)
 
 PayBox invited finalists to keep improving their plugins before the top three are chosen. Everything below came after the original submission, which is tagged `v0.1.0`.

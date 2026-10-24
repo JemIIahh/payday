@@ -232,7 +232,11 @@ ok("the note stays out of the agent sentence", !request.structuredContent?.promp
 const notSender = await callTool("pause_stream", { stream_id: String(L + 1), sender: PAYEES[0] });
 ok("non-sender refused", notSender.isError === true, notSender.content[0].text);
 const broke = await callTool("start_stream", { sender: PAYEES[0], recipient: PAYEES[2], amount: "100", per: "month" });
-ok("insufficient funds refused", broke.isError === true, broke.content[0].text);
+ok("insufficient funds refused", broke.isError === true && broke.content[0].text.includes("get_buy_link"), broke.content[0].text);
+// Anyone may fund a stream, but its sender can refund the deposit: a stranger's top-up must say so.
+await test.setBalance({ address: PAYEES[0], value: 10n ** 16n });
+const stranger = await callTool("top_up_stream", { stream_id: String(L + 1), funder: PAYEES[0], amount: "1" });
+ok("top-up by a non-sender warns", !stranger.isError && stranger.structuredContent?.warnings?.some((w) => w.includes("is not the sender")), stranger.content[0].text.replace(/\n/g, " | ").slice(0, 220));
 const toToken = await callTool("start_stream", { sender: SENDER, recipient: USDC, amount: "100", per: "month" });
 ok("token contract refused as recipient", toToken.isError === true, toToken.content[0].text);
 const unknown = await callTool("start_stream", { sender: SENDER, recipient: "no-such-name-payday-e2e.base.eth", amount: "100", per: "month" });
